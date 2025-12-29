@@ -5,7 +5,7 @@ from alpaca.data.timeframe import TimeFrame
 from datetime import datetime, timedelta
 from auth import KEY, SECRET
 
-# Connect to Alpaca
+# Connect to Alpaca with IEX feed
 client = StockHistoricalDataClient(KEY, SECRET)
 
 # Load tickers
@@ -25,7 +25,8 @@ for i, ticker in enumerate(tickers, 1):
             symbol_or_symbols=ticker,
             timeframe=TimeFrame.Day,
             start=start_date,
-            end=end_date
+            end=end_date,
+            feed='iex'  # Use IEX feed for free tier
         )
         
         bars = client.get_stock_bars(request)
