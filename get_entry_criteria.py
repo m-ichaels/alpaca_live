@@ -1,5 +1,6 @@
 import pandas as pd
 import numpy as np
+from execute import get_open_pairs
 
 # Load data
 prices_df = pd.read_csv("data/sp500_prices_clean.csv")
@@ -51,11 +52,47 @@ for idx, row in pairs_df.iterrows():
 results_df = pd.DataFrame(results)
 results_df = results_df[results_df['signal'] != 'NEUTRAL']
 results_df = results_df.sort_values('z_score', key=abs, ascending=False)
+
+print(f"\nInitial signals found: {len(results_df)}")
+print(f"BUY signals: {len(results_df[results_df['signal'] == 'BUY'])}")
+print(f"SELL signals: {len(results_df[results_df['signal'] == 'SELL'])}")
+
+# Filter out pairs that are already tracked as open
+try:
+    open_pairs = get_open_pairs()
+    
+    if open_pairs:
+        print(f"\nOpen pairs detected in tracker: {len(open_pairs) // 2}")  # Divide by 2 since we store both directions
+        
+        # Filter function to check if this exact pair is already open
+        def pair_is_open(row):
+            return (row['stock1'], row['stock2']) in open_pairs
+        
+        # Count how many signals we're filtering out
+        filtered_out = results_df[results_df.apply(pair_is_open, axis=1)]
+        if len(filtered_out) > 0:
+            print(f"\nFiltering out {len(filtered_out)} pairs that are already open:")
+            for _, row in filtered_out.iterrows():
+                print(f"  - {row['stock1']}/{row['stock2']} (exact pair already tracked)")
+        
+        # Apply filter
+        results_df = results_df[~results_df.apply(pair_is_open, axis=1)]
+        
+        print(f"\nAfter filtering tracked pairs: {len(results_df)} signals remain")
+    else:
+        print(f"\nNo open pairs in tracker - all signals remain valid")
+        
+except Exception as e:
+    print(f"\n⚠️  Warning: Could not check tracked pairs - {e}")
+    print("Proceeding with all signals (no filtering applied)")
+
+# Save filtered results
 results_df.to_csv("data/entry_signals.csv", index=False)
 
 print(f"\nTop 10 entry opportunities:")
 print(results_df[['stock1', 'stock2', 'z_score', 'half_life', 'signal']].head(10))
 
-print(f"\nSummary:")
+print(f"\nFinal Summary:")
 print(f"BUY signals: {len(results_df[results_df['signal'] == 'BUY'])}")
 print(f"SELL signals: {len(results_df[results_df['signal'] == 'SELL'])}")
+print(f"\nSaved to data/entry_signals.csv")

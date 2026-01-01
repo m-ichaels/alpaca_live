@@ -1,11 +1,98 @@
 import pandas as pd
+import os
+from datetime import datetime
 from alpaca.trading.client import TradingClient
 from alpaca.trading.requests import MarketOrderRequest
 from alpaca.trading.enums import OrderSide, TimeInForce
 from auth import KEY, SECRET
 
+# ============================================================================
+# PAIR TRACKER FUNCTIONS (built into execute.py)
+# ============================================================================
+
+TRACKER_FILE = "data/open_pairs.csv"
+
+def add_open_pair(stock1, stock2, signal, z_score, capital_allocation, order1_id, order2_id):
+    """Record a newly opened pair position"""
+    try:
+        if os.path.exists(TRACKER_FILE):
+            tracker = pd.read_csv(TRACKER_FILE)
+        else:
+            tracker = pd.DataFrame(columns=[
+                'stock1', 'stock2', 'signal', 'z_score', 
+                'capital_allocation', 'entry_date', 
+                'order1_id', 'order2_id', 'status'
+            ])
+        
+        new_entry = pd.DataFrame([{
+            'stock1': stock1,
+            'stock2': stock2,
+            'signal': signal,
+            'z_score': z_score,
+            'capital_allocation': capital_allocation,
+            'entry_date': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+            'order1_id': order1_id,
+            'order2_id': order2_id,
+            'status': 'open'
+        }])
+        
+        tracker = pd.concat([tracker, new_entry], ignore_index=True)
+        tracker.to_csv(TRACKER_FILE, index=False)
+        
+        print(f"  ✓ Tracked in open_pairs.csv")
+        
+    except Exception as e:
+        print(f"  ⚠️  Warning: Could not track pair - {e}")
+
+
+def reconcile_with_alpaca(trading_client):
+    """Reconcile tracker with actual Alpaca positions"""
+    try:
+        if not os.path.exists(TRACKER_FILE):
+            return
+        
+        tracker = pd.read_csv(TRACKER_FILE)
+        open_tracker = tracker[tracker['status'] == 'open']
+        
+        if len(open_tracker) == 0:
+            return
+        
+        # Get current Alpaca positions
+        positions = trading_client.get_all_positions()
+        current_holdings = {p.symbol for p in positions}
+        
+        print("\n--- Reconciling tracker with Alpaca positions ---")
+        
+        changes_made = False
+        for idx, row in open_tracker.iterrows():
+            stock1, stock2 = row['stock1'], row['stock2']
+            
+            # If either leg is missing from Alpaca, close the pair in tracker
+            if stock1 not in current_holdings or stock2 not in current_holdings:
+                print(f"  ⚠️  Pair {stock1}/{stock2} incomplete - closing in tracker")
+                tracker.loc[idx, 'status'] = 'closed'
+                tracker.loc[idx, 'exit_date'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                changes_made = True
+        
+        if changes_made:
+            tracker.to_csv(TRACKER_FILE, index=False)
+            print("  ✓ Reconciliation complete\n")
+        else:
+            print("  ✓ All tracked pairs match Alpaca\n")
+        
+    except Exception as e:
+        print(f"  ⚠️  Warning: Could not reconcile - {e}\n")
+
+# ============================================================================
+# MAIN EXECUTION LOGIC
+# ============================================================================
+
 # Connect to Alpaca
 trading_client = TradingClient(KEY, SECRET, paper=True)
+
+# Reconcile tracker with actual positions first
+print("Reconciling tracker with Alpaca positions...")
+reconcile_with_alpaca(trading_client)
 
 # Load Kelly-sized signals (already checked for feasibility)
 try:
@@ -16,7 +103,7 @@ except FileNotFoundError:
     exit(1)
 
 print(f"Processing {len(signals_df)} pre-validated trading signals")
-print(f"Expected Capital Deployment: ${signals_df['allocated_capital'].sum():,.2f}\n")
+print(f"Expected Capital Deployment: ${signals_df['capital_allocation'].sum():,.2f}\n")
 
 # Get current positions (double-check)
 positions = trading_client.get_all_positions()
@@ -32,18 +119,18 @@ for idx, row in signals_df.iterrows():
     
     print(f"\n--- Pair {idx + 1}/{len(signals_df)}: {stock1}/{stock2} ---")
     print(f"Signal: {signal}, Z-score: {row['z_score']:.2f}")
-    print(f"Allocated Capital: ${row['allocated_capital']:,.2f}")
+    print(f"Allocated Capital: ${row['capital_allocation']:,.2f}")
     print(f"Planned: {int(row['shares1'])} {stock1} @ ${row['price1']:.2f}, "
           f"{int(row['shares2'])} {stock2} @ ${row['price2']:.2f}")
     
     # Skip if positions exist (shouldn't happen if sizing.py ran recently)
     if stock1 in current_holdings or stock2 in current_holdings:
-        print(f"⚠ Skipping - existing positions detected")
+        print(f"⚠️  Skipping - existing positions detected")
         skipped_trades.append({
             'stock1': stock1,
             'stock2': stock2,
             'reason': 'existing_positions',
-            'allocated_capital': row['allocated_capital']
+            'capital_allocation': row['capital_allocation']
         })
         continue
     
@@ -76,6 +163,21 @@ for idx, row in signals_df.iterrows():
             time_in_force=TimeInForce.DAY
         ))
         
+        print(f"✓ Executed:")
+        print(f"  {stock1}: {side1.value} {shares1} @ ${row['price1']:.2f} (${shares1 * row['price1']:,.2f})")
+        print(f"  {stock2}: {side2.value} {shares2} @ ${row['price2']:.2f} (${shares2 * row['price2']:,.2f})")
+        
+        # Track this pair as open
+        add_open_pair(
+            stock1=stock1,
+            stock2=stock2,
+            signal=signal,
+            z_score=row['z_score'],
+            capital_allocation=row['capital_allocation'],
+            order1_id=order1.id,
+            order2_id=order2.id
+        )
+        
         executed_trades.append({
             'stock1': stock1,
             'stock2': stock2,
@@ -87,15 +189,11 @@ for idx, row in signals_df.iterrows():
             'price2': row['price2'],
             'signal': signal,
             'z_score': row['z_score'],
-            'allocated_capital': row['allocated_capital'],
+            'capital_allocation': row['capital_allocation'],
             'kelly_fraction': row['kelly_fraction'],
             'order1_id': order1.id,
             'order2_id': order2.id
         })
-        
-        print(f"✓ Executed:")
-        print(f"  {stock1}: {side1.value} {shares1} @ ${row['price1']:.2f} (${shares1 * row['price1']:,.2f})")
-        print(f"  {stock2}: {side2.value} {shares2} @ ${row['price2']:.2f} (${shares2 * row['price2']:,.2f})")
         
     except Exception as e:
         print(f"✗ Error executing trade: {e}")
@@ -103,7 +201,7 @@ for idx, row in signals_df.iterrows():
             'stock1': stock1,
             'stock2': stock2,
             'reason': str(e),
-            'allocated_capital': row['allocated_capital']
+            'capital_allocation': row['capital_allocation']
         })
 
 # Save results
@@ -116,8 +214,8 @@ if executed_trades:
     trades_df.to_csv("data/executed_trades.csv", index=False)
     
     print(f"✓ Successfully Executed: {len(executed_trades)} pairs")
-    print(f"  Total Capital Deployed: ${trades_df['allocated_capital'].sum():,.2f}")
-    print(f"  Average Position Size: ${trades_df['allocated_capital'].mean():,.2f}")
+    print(f"  Total Capital Deployed: ${trades_df['capital_allocation'].sum():,.2f}")
+    print(f"  Average Position Size: ${trades_df['capital_allocation'].mean():,.2f}")
     print(f"  Total Kelly Fraction: {trades_df['kelly_fraction'].sum():.2%}")
 else:
     print("✗ No trades executed")
@@ -126,16 +224,16 @@ if skipped_trades:
     skipped_df = pd.DataFrame(skipped_trades)
     skipped_df.to_csv("data/skipped_trades.csv", index=False)
     
-    print(f"\n⚠ Skipped: {len(skipped_trades)} pairs")
-    print(f"  Lost Capital: ${skipped_df['allocated_capital'].sum():,.2f}")
+    print(f"\n⚠️  Skipped: {len(skipped_trades)} pairs")
+    print(f"  Lost Capital: ${skipped_df['capital_allocation'].sum():,.2f}")
     print("\nSkipped trades saved to data/skipped_trades.csv")
 
 print("=" * 80)
 
 # Final efficiency metrics
 if executed_trades:
-    expected_total = signals_df['allocated_capital'].sum()
-    actual_total = trades_df['allocated_capital'].sum()
+    expected_total = signals_df['capital_allocation'].sum()
+    actual_total = trades_df['capital_allocation'].sum()
     efficiency = (actual_total / expected_total) * 100 if expected_total > 0 else 0
     
     print(f"\nExecution Efficiency: {efficiency:.1f}%")

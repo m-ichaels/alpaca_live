@@ -47,9 +47,10 @@ def main():
         ("s&p500_stocks.py", "Step 1: Fetching S&P 500 ticker list"),
         ("data_getting.py", "Step 2: Downloading historical price data"),
         ("cleaning.py", "Step 3: Cleaning and preprocessing data"),
-        ("pair_getting.py", "Step 4: Finding cointegrated groups"),
+        ("pair_getting.py", "Step 4: Finding cointegrated pairs"),
         ("get_entry_criteria.py", "Step 5: Calculating entry signals and OU parameters"),
-        ("execute.py", "Step 6: Executing trades based on signals")
+        ("sizing.py", "Step 6: Kelly criterion position sizing"),
+        ("execute.py", "Step 7: Executing trades based on sized signals")
     ]
     
     results = {}
