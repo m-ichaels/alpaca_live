@@ -1,6 +1,6 @@
 import pandas as pd
 import numpy as np
-from execute import get_open_pairs
+import os
 
 # Load data
 prices_df = pd.read_csv("data/sp500_prices_clean.csv")
@@ -58,29 +58,41 @@ print(f"BUY signals: {len(results_df[results_df['signal'] == 'BUY'])}")
 print(f"SELL signals: {len(results_df[results_df['signal'] == 'SELL'])}")
 
 # Filter out pairs that are already tracked as open
+TRACKER_FILE = "data/open_pairs.csv"
+
 try:
-    open_pairs = get_open_pairs()
-    
-    if open_pairs:
-        print(f"\nOpen pairs detected in tracker: {len(open_pairs) // 2}")  # Divide by 2 since we store both directions
+    if os.path.exists(TRACKER_FILE):
+        tracker = pd.read_csv(TRACKER_FILE)
+        open_tracker = tracker[tracker['status'] == 'open']
         
-        # Filter function to check if this exact pair is already open
-        def pair_is_open(row):
-            return (row['stock1'], row['stock2']) in open_pairs
-        
-        # Count how many signals we're filtering out
-        filtered_out = results_df[results_df.apply(pair_is_open, axis=1)]
-        if len(filtered_out) > 0:
-            print(f"\nFiltering out {len(filtered_out)} pairs that are already open:")
-            for _, row in filtered_out.iterrows():
-                print(f"  - {row['stock1']}/{row['stock2']} (exact pair already tracked)")
-        
-        # Apply filter
-        results_df = results_df[~results_df.apply(pair_is_open, axis=1)]
-        
-        print(f"\nAfter filtering tracked pairs: {len(results_df)} signals remain")
+        if len(open_tracker) > 0:
+            # Create set of open pairs (both orderings)
+            open_pairs = set()
+            for _, row in open_tracker.iterrows():
+                open_pairs.add((row['stock1'], row['stock2']))
+                open_pairs.add((row['stock2'], row['stock1']))  # Add reverse too
+            
+            print(f"\nOpen pairs detected in tracker: {len(open_tracker)}")
+            
+            # Filter function to check if this exact pair is already open
+            def pair_is_open(row):
+                return (row['stock1'], row['stock2']) in open_pairs
+            
+            # Count how many signals we're filtering out
+            filtered_out = results_df[results_df.apply(pair_is_open, axis=1)]
+            if len(filtered_out) > 0:
+                print(f"\nFiltering out {len(filtered_out)} pairs that are already open:")
+                for _, row in filtered_out.iterrows():
+                    print(f"  - {row['stock1']}/{row['stock2']} (exact pair already tracked)")
+            
+            # Apply filter
+            results_df = results_df[~results_df.apply(pair_is_open, axis=1)]
+            
+            print(f"\nAfter filtering tracked pairs: {len(results_df)} signals remain")
+        else:
+            print(f"\nNo open pairs in tracker - all signals remain valid")
     else:
-        print(f"\nNo open pairs in tracker - all signals remain valid")
+        print(f"\nNo tracker file found - all signals remain valid")
         
 except Exception as e:
     print(f"\n⚠️  Warning: Could not check tracked pairs - {e}")

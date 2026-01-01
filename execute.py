@@ -12,17 +12,37 @@ from auth import KEY, SECRET
 
 TRACKER_FILE = "data/open_pairs.csv"
 
+def initialize_tracker():
+    """Initialize tracker file with proper columns if it doesn't exist or is empty"""
+    try:
+        # Check if file exists and has content
+        if os.path.exists(TRACKER_FILE):
+            try:
+                tracker = pd.read_csv(TRACKER_FILE)
+                if len(tracker.columns) > 0:
+                    return  # File is valid, nothing to do
+            except pd.errors.EmptyDataError:
+                pass  # File is empty, will recreate
+        
+        # Create new tracker with proper columns
+        tracker = pd.DataFrame(columns=[
+            'stock1', 'stock2', 'signal', 'z_score', 
+            'capital_allocation', 'entry_date', 
+            'order1_id', 'order2_id', 'status', 'exit_date'
+        ])
+        tracker.to_csv(TRACKER_FILE, index=False)
+        print(f"✓ Initialized tracker file: {TRACKER_FILE}")
+        
+    except Exception as e:
+        print(f"⚠️  Warning: Could not initialize tracker - {e}")
+
 def add_open_pair(stock1, stock2, signal, z_score, capital_allocation, order1_id, order2_id):
     """Record a newly opened pair position"""
     try:
-        if os.path.exists(TRACKER_FILE):
-            tracker = pd.read_csv(TRACKER_FILE)
-        else:
-            tracker = pd.DataFrame(columns=[
-                'stock1', 'stock2', 'signal', 'z_score', 
-                'capital_allocation', 'entry_date', 
-                'order1_id', 'order2_id', 'status'
-            ])
+        # Ensure tracker is initialized
+        initialize_tracker()
+        
+        tracker = pd.read_csv(TRACKER_FILE)
         
         new_entry = pd.DataFrame([{
             'stock1': stock1,
@@ -33,7 +53,8 @@ def add_open_pair(stock1, stock2, signal, z_score, capital_allocation, order1_id
             'entry_date': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
             'order1_id': order1_id,
             'order2_id': order2_id,
-            'status': 'open'
+            'status': 'open',
+            'exit_date': ''
         }])
         
         tracker = pd.concat([tracker, new_entry], ignore_index=True)
@@ -48,13 +69,19 @@ def add_open_pair(stock1, stock2, signal, z_score, capital_allocation, order1_id
 def reconcile_with_alpaca(trading_client):
     """Reconcile tracker with actual Alpaca positions"""
     try:
-        if not os.path.exists(TRACKER_FILE):
-            return
+        # Ensure tracker is initialized
+        initialize_tracker()
         
         tracker = pd.read_csv(TRACKER_FILE)
+        
+        if len(tracker) == 0:
+            print("  ✓ No open pairs to reconcile\n")
+            return
+        
         open_tracker = tracker[tracker['status'] == 'open']
         
         if len(open_tracker) == 0:
+            print("  ✓ No open pairs to reconcile\n")
             return
         
         # Get current Alpaca positions
@@ -86,6 +113,12 @@ def reconcile_with_alpaca(trading_client):
 # ============================================================================
 # MAIN EXECUTION LOGIC
 # ============================================================================
+
+# Ensure data directory exists
+os.makedirs("data", exist_ok=True)
+
+# Initialize tracker file
+initialize_tracker()
 
 # Connect to Alpaca
 trading_client = TradingClient(KEY, SECRET, paper=True)
