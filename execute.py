@@ -1,130 +1,143 @@
 import pandas as pd
-import numpy as np
 from alpaca.trading.client import TradingClient
 from alpaca.trading.requests import MarketOrderRequest
 from alpaca.trading.enums import OrderSide, TimeInForce
-from alpaca.data.historical import StockHistoricalDataClient
-from alpaca.data.requests import StockLatestQuoteRequest
 from auth import KEY, SECRET
 
-# Connect to Alpaca Paper Trading
+# Connect to Alpaca
 trading_client = TradingClient(KEY, SECRET, paper=True)
-data_client = StockHistoricalDataClient(KEY, SECRET)
 
-# Load entry signals and eigenvectors
-signals_df = pd.read_csv("data/ou_entry_scores.csv")
-groups_df = pd.read_csv("data/cointegrated_groups.csv")
-signals_df = signals_df.merge(groups_df[['group', 'eigenvector']], on='group', how='left')
-signals_df = signals_df[signals_df['signal'].isin(['BUY', 'SELL'])]
-signals_df = signals_df.sort_values('entry_score', ascending=False)
+# Load Kelly-sized signals (already checked for feasibility)
+try:
+    signals_df = pd.read_csv("data/sized_signals.csv")
+    print("Using Kelly-sized signals from sizing.py")
+except FileNotFoundError:
+    print("ERROR: sized_signals.csv not found. Run sizing.py first!")
+    exit(1)
 
-print(f"Processing {len(signals_df)} trading signals")
+print(f"Processing {len(signals_df)} pre-validated trading signals")
+print(f"Expected Capital Deployment: ${signals_df['allocated_capital'].sum():,.2f}\n")
 
-# Get current positions
+# Get current positions (double-check)
 positions = trading_client.get_all_positions()
-current_holdings = {p.symbol: float(p.qty) for p in positions}
-
-# Get open orders
-open_orders = trading_client.get_orders()
-pending_symbols = {o.symbol for o in open_orders}
-
-print(f"\nCurrent positions: {len(current_holdings)}")
-print(f"Open orders: {len(pending_symbols)}")
+current_holdings = {p.symbol for p in positions}
 
 executed_trades = []
+skipped_trades = []
 
 for idx, row in signals_df.iterrows():
-    tickers = row['group'].split(',')
-    weights = [float(x) for x in row['eigenvector'].split(',')]
+    stock1 = row['stock1']
+    stock2 = row['stock2']
     signal = row['signal']
     
-    # Normalize weights to sum to 1 (absolute value)
-    weights = np.array(weights)
-    weights = weights / np.sum(np.abs(weights))
+    print(f"\n--- Pair {idx + 1}/{len(signals_df)}: {stock1}/{stock2} ---")
+    print(f"Signal: {signal}, Z-score: {row['z_score']:.2f}")
+    print(f"Allocated Capital: ${row['allocated_capital']:,.2f}")
+    print(f"Planned: {int(row['shares1'])} {stock1} @ ${row['price1']:.2f}, "
+          f"{int(row['shares2'])} {stock2} @ ${row['price2']:.2f}")
     
-    print(f"\n--- Group: {row['group'][:50]}... ---")
-    print(f"Signal: {signal}, Z-score: {row['z_score']:.2f}, Entry score: {row['entry_score']:.2f}")
-    
-    # Check for partial fills
-    has_position = any(ticker in current_holdings for ticker in tickers)
-    
-    if has_position:
-        conflicting = [t for t in tickers if t in current_holdings]
-        print(f"Skipping - existing positions: {', '.join(conflicting)}")
+    # Skip if positions exist (shouldn't happen if sizing.py ran recently)
+    if stock1 in current_holdings or stock2 in current_holdings:
+        print(f"⚠ Skipping - existing positions detected")
+        skipped_trades.append({
+            'stock1': stock1,
+            'stock2': stock2,
+            'reason': 'existing_positions',
+            'allocated_capital': row['allocated_capital']
+        })
         continue
     
-    # Check pending orders
-    pending_in_group = [t for t in tickers if t in pending_symbols]
+    # Use pre-calculated shares from sizing.py
+    shares1 = int(row['shares1'])
+    shares2 = int(row['shares2'])
     
-    if len(pending_in_group) == len(tickers):
-        print(f"Skipping - all stocks have pending orders")
-        continue
-    elif len(pending_in_group) > 0:
-        print(f"Partial pending orders detected: {', '.join(pending_in_group)}")
-        print(f"Will place orders for remaining: {', '.join([t for t in tickers if t not in pending_symbols])}")
-        tickers_to_trade = [t for t in tickers if t not in pending_symbols]
-        weights_to_trade = [w for t, w in zip(tickers, weights) if t not in pending_symbols]
+    # Determine order sides based on signal
+    if signal == 'BUY':
+        side1 = OrderSide.BUY
+        side2 = OrderSide.SELL
     else:
-        tickers_to_trade = tickers
-        weights_to_trade = weights
+        side1 = OrderSide.SELL
+        side2 = OrderSide.BUY
     
-    # Calculate position sizes ($1,000 per group)
-    capital_per_group = 1000
-    
-    for ticker, weight in zip(tickers_to_trade, weights_to_trade):
-        try:
-            # Get current price
-            quote_request = StockLatestQuoteRequest(symbol_or_symbols=ticker)
-            quote = data_client.get_stock_latest_quote(quote_request)[ticker]
-            
-            # Use bid/ask midpoint
-            price = (quote.bid_price + quote.ask_price) / 2
-            
-            if price is None or price <= 0:
-                print(f"  {ticker}: No valid price available")
-                continue
-            
-            # Calculate shares based on weight
-            dollar_amount = capital_per_group * abs(weight)
-            shares = int(dollar_amount / price)
-            
-            if shares == 0:
-                continue
-            
-            # Determine action
-            if signal == 'BUY':
-                side = OrderSide.BUY if weight > 0 else OrderSide.SELL
-            else:  # SELL signal
-                side = OrderSide.SELL if weight > 0 else OrderSide.BUY
-            
-            # Place order
-            order_data = MarketOrderRequest(
-                symbol=ticker,
-                qty=shares,
-                side=side,
-                time_in_force=TimeInForce.DAY
-            )
-            order = trading_client.submit_order(order_data)
-            
-            executed_trades.append({
-                'group': row['group'],
-                'ticker': ticker,
-                'action': side.value,
-                'shares': shares,
-                'price': price,
-                'weight': weight,
-                'signal': signal
-            })
-            
-            print(f"  {ticker}: {side.value} {shares} shares @ ${price:.2f}")
-            
-        except Exception as e:
-            print(f"  {ticker}: Error - {e}")
+    try:
+        # Place first order
+        order1 = trading_client.submit_order(MarketOrderRequest(
+            symbol=stock1,
+            qty=shares1,
+            side=side1,
+            time_in_force=TimeInForce.DAY
+        ))
+        
+        # Place second order
+        order2 = trading_client.submit_order(MarketOrderRequest(
+            symbol=stock2,
+            qty=shares2,
+            side=side2,
+            time_in_force=TimeInForce.DAY
+        ))
+        
+        executed_trades.append({
+            'stock1': stock1,
+            'stock2': stock2,
+            'action1': side1.value,
+            'shares1': shares1,
+            'price1': row['price1'],
+            'action2': side2.value,
+            'shares2': shares2,
+            'price2': row['price2'],
+            'signal': signal,
+            'z_score': row['z_score'],
+            'allocated_capital': row['allocated_capital'],
+            'kelly_fraction': row['kelly_fraction'],
+            'order1_id': order1.id,
+            'order2_id': order2.id
+        })
+        
+        print(f"✓ Executed:")
+        print(f"  {stock1}: {side1.value} {shares1} @ ${row['price1']:.2f} (${shares1 * row['price1']:,.2f})")
+        print(f"  {stock2}: {side2.value} {shares2} @ ${row['price2']:.2f} (${shares2 * row['price2']:,.2f})")
+        
+    except Exception as e:
+        print(f"✗ Error executing trade: {e}")
+        skipped_trades.append({
+            'stock1': stock1,
+            'stock2': stock2,
+            'reason': str(e),
+            'allocated_capital': row['allocated_capital']
+        })
 
-# Save executed trades
+# Save results
+print("\n" + "=" * 80)
+print("EXECUTION SUMMARY")
+print("=" * 80)
+
 if executed_trades:
     trades_df = pd.DataFrame(executed_trades)
     trades_df.to_csv("data/executed_trades.csv", index=False)
-    print(f"\nExecuted {len(executed_trades)} trades across {len(signals_df)} groups")
+    
+    print(f"✓ Successfully Executed: {len(executed_trades)} pairs")
+    print(f"  Total Capital Deployed: ${trades_df['allocated_capital'].sum():,.2f}")
+    print(f"  Average Position Size: ${trades_df['allocated_capital'].mean():,.2f}")
+    print(f"  Total Kelly Fraction: {trades_df['kelly_fraction'].sum():.2%}")
 else:
-    print("\nNo trades executed")
+    print("✗ No trades executed")
+
+if skipped_trades:
+    skipped_df = pd.DataFrame(skipped_trades)
+    skipped_df.to_csv("data/skipped_trades.csv", index=False)
+    
+    print(f"\n⚠ Skipped: {len(skipped_trades)} pairs")
+    print(f"  Lost Capital: ${skipped_df['allocated_capital'].sum():,.2f}")
+    print("\nSkipped trades saved to data/skipped_trades.csv")
+
+print("=" * 80)
+
+# Final efficiency metrics
+if executed_trades:
+    expected_total = signals_df['allocated_capital'].sum()
+    actual_total = trades_df['allocated_capital'].sum()
+    efficiency = (actual_total / expected_total) * 100 if expected_total > 0 else 0
+    
+    print(f"\nExecution Efficiency: {efficiency:.1f}%")
+    print(f"Expected: ${expected_total:,.2f}")
+    print(f"Achieved: ${actual_total:,.2f}")

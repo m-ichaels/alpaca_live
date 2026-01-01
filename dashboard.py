@@ -10,6 +10,8 @@ from alpaca.trading.client import TradingClient
 from alpaca.data.historical import StockHistoricalDataClient
 from alpaca.data.requests import StockBarsRequest
 from alpaca.data.timeframe import TimeFrame
+from alpaca.trading.requests import MarketOrderRequest
+from alpaca.trading.enums import OrderSide, TimeInForce
 from auth import KEY, SECRET
 
 # Initialize Dash app
@@ -19,8 +21,65 @@ app = dash.Dash(__name__)
 trading_client = TradingClient(KEY, SECRET, paper=True)
 data_client = StockHistoricalDataClient(KEY, SECRET)
 
-def calculate_statistics():
+def liquidate_all_positions():
+    """Liquidate all positions and cancel all orders"""
+    results = {'success': True, 'message': '', 'positions_closed': 0, 'errors': []}
+    
+    try:
+        # Cancel all open orders
+        trading_client.cancel_orders()
+        results['message'] += "Canceled all open orders. "
+    except Exception as e:
+        results['errors'].append(f"Error canceling orders: {e}")
+    
+    try:
+        # Liquidate all positions
+        positions = trading_client.get_all_positions()
+        
+        if not positions:
+            results['message'] += "No positions to liquidate."
+        else:
+            for position in positions:
+                symbol = position.symbol
+                qty = abs(float(position.qty))
+                side = OrderSide.SELL if float(position.qty) > 0 else OrderSide.BUY
+                
+                try:
+                    order_data = MarketOrderRequest(
+                        symbol=symbol,
+                        qty=qty,
+                        side=side,
+                        time_in_force=TimeInForce.DAY
+                    )
+                    order = trading_client.submit_order(order_data)
+                    results['positions_closed'] += 1
+                except Exception as e:
+                    results['errors'].append(f"{symbol}: {e}")
+            
+            results['message'] += f"Closed {results['positions_closed']} positions."
+    except Exception as e:
+        results['success'] = False
+        results['errors'].append(f"Error liquidating: {e}")
+    
+    return results
+
+def get_timeframe_params(timeframe):
+    """Convert timeframe string to days and portfolio history period"""
+    timeframe_map = {
+        '1D': {'days': 1, 'period': '1D', 'alpaca_timeframe': '1Min'},
+        '1W': {'days': 7, 'period': '1W', 'alpaca_timeframe': '5Min'},
+        '1M': {'days': 30, 'period': '1M', 'alpaca_timeframe': '1D'},
+        '3M': {'days': 90, 'period': '3M', 'alpaca_timeframe': '1D'},
+        '1Y': {'days': 365, 'period': '1A', 'alpaca_timeframe': '1D'},
+        'MAX': {'days': 1000, 'period': 'all', 'alpaca_timeframe': '1D'}
+    }
+    return timeframe_map.get(timeframe, timeframe_map['1M'])
+
+def calculate_statistics(timeframe='1M'):
     """Calculate all trading statistics from Alpaca data"""
+    
+    params = get_timeframe_params(timeframe)
+    days = params['days']
     
     # Get account information
     account = trading_client.get_account()
@@ -40,7 +99,7 @@ def calculate_statistics():
     
     # Get closed positions (trades history)
     end_date = datetime.now()
-    start_date = end_date - timedelta(days=90)  # Last 90 days
+    start_date = end_date - timedelta(days=days)
     
     try:
         activities = trading_client.get_activities(
@@ -139,8 +198,8 @@ def calculate_statistics():
     portfolio_history_data = []
     try:
         portfolio_history = trading_client.get_portfolio_history(
-            period='1M',
-            timeframe='1D'
+            period=params['period'],
+            timeframe=params['alpaca_timeframe']
         )
         
         if portfolio_history and portfolio_history.equity:
@@ -158,8 +217,8 @@ def calculate_statistics():
             total_return = ((equity_curve[-1] - equity_curve[0]) / equity_curve[0]) * 100
             
             # Annualized rate of return
-            days = len(equity_curve)
-            rate_of_return = ((equity_curve[-1] / equity_curve[0]) ** (252 / days) - 1) * 100 if days > 0 else 0
+            days_actual = len(equity_curve)
+            rate_of_return = ((equity_curve[-1] / equity_curve[0]) ** (252 / days_actual) - 1) * 100 if days_actual > 0 else 0
             
             # Sharpe ratio (annualized, assuming risk-free rate = 0)
             if len(returns) > 1:
@@ -221,8 +280,64 @@ def calculate_statistics():
 # Layout
 app.layout = html.Div([
     html.Div([
-        html.H1("Trading Statistics Dashboard", 
-                style={'textAlign': 'center', 'color': '#2c3e50', 'marginBottom': '30px'}),
+        # Header with title and liquidate button
+        html.Div([
+            html.H1("Trading Statistics Dashboard", 
+                    style={'textAlign': 'center', 'color': '#2c3e50', 'marginBottom': '20px', 'flex': '1'}),
+            html.Button('LIQUIDATE ALL', id='liquidate-btn', n_clicks=0,
+                       style={
+                           'padding': '12px 24px',
+                           'backgroundColor': '#e74c3c',
+                           'color': 'white',
+                           'border': 'none',
+                           'borderRadius': '6px',
+                           'fontSize': '16px',
+                           'fontWeight': 'bold',
+                           'cursor': 'pointer',
+                           'boxShadow': '0 2px 4px rgba(0,0,0,0.2)',
+                           'transition': 'all 0.3s',
+                           'position': 'absolute',
+                           'right': '20px',
+                           'top': '20px'
+                       })
+        ], style={'position': 'relative', 'display': 'flex', 'alignItems': 'center', 'justifyContent': 'center'}),
+        
+        # Liquidation status message
+        html.Div(id='liquidate-status', style={'textAlign': 'center', 'marginBottom': '10px', 'minHeight': '30px'}),
+        
+        # Timeframe selector
+        html.Div([
+            html.Div([
+                html.Button('1D', id='btn-1D', n_clicks=0, 
+                           style={'margin': '0 5px', 'padding': '8px 16px', 'cursor': 'pointer',
+                                  'backgroundColor': '#ecf0f1', 'border': '1px solid #bdc3c7',
+                                  'borderRadius': '4px', 'fontSize': '14px', 'fontWeight': '500'}),
+                html.Button('1W', id='btn-1W', n_clicks=0,
+                           style={'margin': '0 5px', 'padding': '8px 16px', 'cursor': 'pointer',
+                                  'backgroundColor': '#ecf0f1', 'border': '1px solid #bdc3c7',
+                                  'borderRadius': '4px', 'fontSize': '14px', 'fontWeight': '500'}),
+                html.Button('1M', id='btn-1M', n_clicks=0,
+                           style={'margin': '0 5px', 'padding': '8px 16px', 'cursor': 'pointer',
+                                  'backgroundColor': '#3498db', 'border': '1px solid #2980b9',
+                                  'borderRadius': '4px', 'fontSize': '14px', 'fontWeight': '500',
+                                  'color': 'white'}),
+                html.Button('3M', id='btn-3M', n_clicks=0,
+                           style={'margin': '0 5px', 'padding': '8px 16px', 'cursor': 'pointer',
+                                  'backgroundColor': '#ecf0f1', 'border': '1px solid #bdc3c7',
+                                  'borderRadius': '4px', 'fontSize': '14px', 'fontWeight': '500'}),
+                html.Button('1Y', id='btn-1Y', n_clicks=0,
+                           style={'margin': '0 5px', 'padding': '8px 16px', 'cursor': 'pointer',
+                                  'backgroundColor': '#ecf0f1', 'border': '1px solid #bdc3c7',
+                                  'borderRadius': '4px', 'fontSize': '14px', 'fontWeight': '500'}),
+                html.Button('MAX', id='btn-MAX', n_clicks=0,
+                           style={'margin': '0 5px', 'padding': '8px 16px', 'cursor': 'pointer',
+                                  'backgroundColor': '#ecf0f1', 'border': '1px solid #bdc3c7',
+                                  'borderRadius': '4px', 'fontSize': '14px', 'fontWeight': '500'}),
+            ], style={'display': 'flex', 'justifyContent': 'center', 'marginBottom': '20px'}),
+            
+            # Hidden div to store current timeframe
+            html.Div(id='current-timeframe', children='1M', style={'display': 'none'})
+        ]),
         
         html.Div(id='stats-container', style={'padding': '20px'}),
         
@@ -235,11 +350,116 @@ app.layout = html.Div([
 ])
 
 @app.callback(
-    Output('stats-container', 'children'),
-    Input('interval-component', 'n_intervals')
+    Output('liquidate-status', 'children'),
+    Input('liquidate-btn', 'n_clicks'),
+    prevent_initial_call=True
 )
-def update_stats(n):
-    stats = calculate_statistics()
+def handle_liquidation(n_clicks):
+    """Handle liquidation button click"""
+    if n_clicks > 0:
+        results = liquidate_all_positions()
+        
+        if results['success']:
+            message_style = {
+                'padding': '12px 20px',
+                'backgroundColor': '#2ecc71',
+                'color': 'white',
+                'borderRadius': '6px',
+                'fontWeight': '500',
+                'display': 'inline-block'
+            }
+            message = f"✓ {results['message']}"
+        else:
+            message_style = {
+                'padding': '12px 20px',
+                'backgroundColor': '#e74c3c',
+                'color': 'white',
+                'borderRadius': '6px',
+                'fontWeight': '500',
+                'display': 'inline-block'
+            }
+            message = f"✗ Liquidation failed: {' '.join(results['errors'])}"
+        
+        if results['errors'] and results['success']:
+            message += f" (Errors: {', '.join(results['errors'])})"
+        
+        return html.Div(message, style=message_style)
+    
+    return ""
+
+@app.callback(
+    Output('current-timeframe', 'children'),
+    [Input('btn-1D', 'n_clicks'),
+     Input('btn-1W', 'n_clicks'),
+     Input('btn-1M', 'n_clicks'),
+     Input('btn-3M', 'n_clicks'),
+     Input('btn-1Y', 'n_clicks'),
+     Input('btn-MAX', 'n_clicks')],
+    prevent_initial_call=False
+)
+def update_timeframe(n1d, n1w, n1m, n3m, n1y, nmax):
+    """Update the selected timeframe based on button clicks"""
+    ctx = dash.callback_context
+    
+    if not ctx.triggered:
+        return '1M'
+    
+    button_id = ctx.triggered[0]['prop_id'].split('.')[0]
+    timeframe_map = {
+        'btn-1D': '1D',
+        'btn-1W': '1W',
+        'btn-1M': '1M',
+        'btn-3M': '3M',
+        'btn-1Y': '1Y',
+        'btn-MAX': 'MAX'
+    }
+    
+    return timeframe_map.get(button_id, '1M')
+
+@app.callback(
+    [Output('btn-1D', 'style'),
+     Output('btn-1W', 'style'),
+     Output('btn-1M', 'style'),
+     Output('btn-3M', 'style'),
+     Output('btn-1Y', 'style'),
+     Output('btn-MAX', 'style')],
+    Input('current-timeframe', 'children')
+)
+def update_button_styles(timeframe):
+    """Update button styles to highlight the selected timeframe"""
+    base_style = {
+        'margin': '0 5px', 'padding': '8px 16px', 'cursor': 'pointer',
+        'backgroundColor': '#ecf0f1', 'border': '1px solid #bdc3c7',
+        'borderRadius': '4px', 'fontSize': '14px', 'fontWeight': '500'
+    }
+    
+    active_style = {
+        'margin': '0 5px', 'padding': '8px 16px', 'cursor': 'pointer',
+        'backgroundColor': '#3498db', 'border': '1px solid #2980b9',
+        'borderRadius': '4px', 'fontSize': '14px', 'fontWeight': '500',
+        'color': 'white'
+    }
+    
+    styles = {
+        '1D': base_style.copy(),
+        '1W': base_style.copy(),
+        '1M': base_style.copy(),
+        '3M': base_style.copy(),
+        '1Y': base_style.copy(),
+        'MAX': base_style.copy()
+    }
+    
+    styles[timeframe] = active_style
+    
+    return styles['1D'], styles['1W'], styles['1M'], styles['3M'], styles['1Y'], styles['MAX']
+
+@app.callback(
+    Output('stats-container', 'children'),
+    [Input('interval-component', 'n_intervals'),
+     Input('current-timeframe', 'children')]
+)
+def update_stats(n, timeframe):
+    stats = calculate_statistics(timeframe)
     
     # Load cointegrated groups if available
     try:
@@ -322,7 +542,7 @@ def update_stats(n):
         
         # Portfolio P&L Graph
         html.Div([
-            html.H2("Portfolio P&L Over Time", style={'color': '#34495e', 'borderBottom': '2px solid #3498db', 'paddingBottom': '10px'}),
+            html.H2(f"Portfolio P&L Over Time ({timeframe})", style={'color': '#34495e', 'borderBottom': '2px solid #3498db', 'paddingBottom': '10px'}),
             dcc.Graph(
                 figure=create_portfolio_pl_graph(stats['portfolio_history']),
                 config={'displayModeBar': False}
@@ -353,7 +573,7 @@ def update_stats(n):
             )
         ], style={'marginBottom': '30px'}),
         
-        html.Div(f"Last updated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}", 
+        html.Div(f"Last updated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} | Timeframe: {timeframe}", 
                 style={'textAlign': 'center', 'color': '#7f8c8d', 'marginTop': '20px', 'fontSize': '14px'})
     ]
     
