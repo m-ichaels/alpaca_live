@@ -25,7 +25,7 @@ def close_pair_in_tracker(stock1, stock2):
     """Mark a pair as closed in the tracker"""
     try:
         if not os.path.exists(TRACKER_FILE):
-            print(f"  ⚠️  No tracker file found")
+            print(f"  [!] No tracker file found")
             return False
         
         tracker = pd.read_csv(TRACKER_FILE)
@@ -40,21 +40,21 @@ def close_pair_in_tracker(stock1, stock2):
             tracker.loc[mask, 'status'] = 'closed'
             tracker.loc[mask, 'exit_date'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
             tracker.to_csv(TRACKER_FILE, index=False)
-            print(f"  ✓ Pair closed in tracker")
+            print(f"  [OK] Pair closed in tracker")
             return True
         else:
-            print(f"  ⚠️  Pair not found in tracker")
+            print(f"  [!] Pair not found in tracker")
             return False
             
     except Exception as e:
-        print(f"  ⚠️  Warning: Could not close pair in tracker - {e}")
+        print(f"  [!] Warning: Could not close pair in tracker - {e}")
         return False
 
 def log_trade_outcome(stock1, stock2, exit_z, exit_reason):
     """Log trade outcome to history file for win rate calculation"""
     try:
         if not os.path.exists(HISTORY_FILE):
-            print(f"  ⚠️  No trade history file found")
+            print(f"  [!] No trade history file found")
             return
         
         history = pd.read_csv(HISTORY_FILE)
@@ -74,18 +74,18 @@ def log_trade_outcome(stock1, stock2, exit_z, exit_reason):
             history.loc[mask, 'win'] = 1 if exit_reason == "TARGET REACHED" else 0
             
             history.to_csv(HISTORY_FILE, index=False)
-            print(f"  ✓ Trade outcome logged to history")
+            print(f"  [OK] Trade outcome logged to history")
             
             # Display updated win rate
             completed = history[history['exit_date'].notna()]
             if len(completed) >= 5:
                 win_rate = completed['win'].mean()
-                print(f"  📊 Overall win rate: {win_rate:.1%} ({completed['win'].sum()}/{len(completed)} wins)")
+                print(f"  [STATS] Overall win rate: {win_rate:.1%} ({completed['win'].sum()}/{len(completed)} wins)")
         else:
-            print(f"  ⚠️  Trade not found in history")
+            print(f"  [!] Trade not found in history")
             
     except Exception as e:
-        print(f"  ⚠️  Warning: Could not log trade outcome - {e}")
+        print(f"  [!] Warning: Could not log trade outcome - {e}")
 
 def manage_open_trades():
     # 1. Load tracked open pairs
@@ -125,7 +125,7 @@ def manage_open_trades():
         ]
         
         if len(pair_info) == 0:
-            print(f"⚠️  {s1}/{s2} - No cointegration data found, skipping")
+            print(f"[!] {s1}/{s2} - No cointegration data found, skipping")
             continue
         
         beta = pair_info.iloc[0]['hedge_ratio']
@@ -167,15 +167,15 @@ def manage_open_trades():
                     trading_client.close_position(s2)
                     close_pair_in_tracker(s1, s2)
                     log_trade_outcome(s1, s2, current_z, close_reason)
-                    print(f"  ✓ Positions closed in Alpaca")
+                    print(f"  [OK] Positions closed in Alpaca")
                 except Exception as e:
-                    print(f"  ✗ Error closing positions: {e}")
+                    print(f"  [X] Error closing positions: {e}")
             else:
-                print(f"  → Holding (within thresholds)")
+                print(f"  -> Holding (within thresholds)")
                 
         except Exception as e:
             print(f"\n{s1}/{s2}")
-            print(f"  ✗ Error checking pair: {e}")
+            print(f"  [X] Error checking pair: {e}")
     
     print("\n" + "=" * 80)
 

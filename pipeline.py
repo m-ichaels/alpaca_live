@@ -39,14 +39,14 @@ def run_script(script_name, description):
         return_code = process.poll()
         
         if return_code == 0:
-            print(f"✓ {script_name} completed successfully")
+            print(f"[OK] {script_name} completed successfully")
             return True
         else:
-            print(f"✗ {script_name} failed with exit code {return_code}")
+            print(f"[X] {script_name} failed with exit code {return_code}")
             return False
             
     except Exception as e:
-        print(f"✗ Unexpected error: {e}")
+        print(f"[X] Unexpected error: {e}")
         return False
 
 def main():
@@ -88,8 +88,8 @@ def main():
     print("="*70)
     
     for script, success in results.items():
-        status = "✓ SUCCESS" if success else "✗ FAILED"
-        print(f"{status:12} - {script}")
+        status = "[OK] SUCCESS" if success else "[X] FAILED"
+        print(f"{status:15} - {script}")
     
     all_success = all(results.values())
     

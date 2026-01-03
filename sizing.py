@@ -40,7 +40,10 @@ current_holdings = {p.symbol for p in positions}
 def calculate_adaptive_win_probability(z_score):
     """
     Calculate win probability using historical trade data when available,
-    falling back to theoretical estimates
+    falling back to theoretical estimates.
+    
+    NOTE: Only uses trades with definitive outcomes (win=0 or win=1).
+    Manual liquidations (win=None) are excluded from win rate calculations.
     """
     abs_z = abs(z_score)
     
@@ -58,7 +61,13 @@ def calculate_adaptive_win_probability(z_score):
     if os.path.exists("data/trade_history.csv"):
         try:
             history = pd.read_csv("data/trade_history.csv")
-            completed = history[history['exit_date'].notna()]
+            
+            # Only use completed trades with definitive outcomes
+            # Exclude manual liquidations (win=None/NaN)
+            completed = history[
+                (history['exit_date'].notna()) & 
+                (history['win'].notna())
+            ]
             
             if len(completed) >= 10:  # Minimum sample size
                 # Filter similar z-score ranges (±0.5)
@@ -72,8 +81,10 @@ def calculate_adaptive_win_probability(z_score):
                     # Blend: 60% empirical, 40% theoretical
                     blended = 0.6 * empirical_win_rate + 0.4 * theoretical
                     print(f"  Using blended win prob for |Z|={abs_z:.1f}: "
-                          f"{blended:.1%} (empirical: {empirical_win_rate:.1%}, n={len(similar_trades)})")
+                          f"{blended:.1%} (empirical: {empirical_win_rate:.1%}, "
+                          f"n={len(similar_trades)} definitive outcomes)")
                     return blended
+                    
         except Exception as e:
             print(f"  Warning: Could not load trade history - {e}")
     
@@ -101,7 +112,7 @@ def calculate_kelly_parameters(z_score, spread_mean, spread_std):
     # Win/loss ratio from actual TP/SL
     win_loss_ratio = expected_profit / expected_loss if expected_loss > 0 else 1.0
     
-    # Adaptive win probability
+    # Adaptive win probability (excludes manual liquidations)
     win_prob = calculate_adaptive_win_probability(z_score)
     
     # Kelly formula: f = (p*b - q) / b
@@ -184,6 +195,29 @@ def check_trade_feasibility(stock1, stock2, beta, capital, signal):
     
     except Exception as e:
         return False, None, None, None, None, None
+
+# Display trade history stats if available
+if os.path.exists("data/trade_history.csv"):
+    try:
+        history = pd.read_csv("data/trade_history.csv")
+        completed = history[history['exit_date'].notna()]
+        definitive = completed[completed['win'].notna()]
+        liquidated = completed[completed['win'].isna()]
+        
+        if len(completed) > 0:
+            print("\n" + "=" * 80)
+            print("TRADE HISTORY SUMMARY")
+            print("=" * 80)
+            print(f"Total completed trades: {len(completed)}")
+            print(f"  Definitive outcomes (used for win rate): {len(definitive)}")
+            if len(definitive) > 0:
+                print(f"    Wins: {definitive['win'].sum():.0f}")
+                print(f"    Losses: {(definitive['win'] == 0).sum():.0f}")
+                print(f"    Win rate: {definitive['win'].mean():.1%}")
+            print(f"  Manual liquidations (neutral, excluded): {len(liquidated)}")
+            print("=" * 80 + "\n")
+    except Exception as e:
+        print(f"Warning: Could not load trade history stats - {e}\n")
 
 # Calculate raw Kelly fractions for each pair
 raw_kelly_data = []
@@ -294,9 +328,9 @@ for idx, row in feasible_df.iterrows():
             'kelly_fraction': actual_cap / total_equity
         })
         allocated_capital += actual_cap
-        print(f"✓ {row['stock1']:6s}/{row['stock2']:6s}: ${actual_cap:>9,.2f} ({actual_cap/total_equity:>5.2%})")
+        print(f"[OK] {row['stock1']:6s}/{row['stock2']:6s}: ${actual_cap:>9,.2f} ({actual_cap/total_equity:>5.2%})")
     else:
-        print(f"✗ {row['stock1']:6s}/{row['stock2']:6s}: Failed at ${target_capital:>9,.2f}")
+        print(f"[X]  {row['stock1']:6s}/{row['stock2']:6s}: Failed at ${target_capital:>9,.2f}")
 
 # Create final DataFrame
 final_df = pd.DataFrame(allocated_pairs)

@@ -32,10 +32,10 @@ def initialize_tracker():
             'order1_id', 'order2_id', 'status', 'exit_date'
         ])
         tracker.to_csv(TRACKER_FILE, index=False)
-        print(f"✓ Initialized tracker file: {TRACKER_FILE}")
+        print(f"[OK] Initialized tracker file: {TRACKER_FILE}")
         
     except Exception as e:
-        print(f"⚠️  Warning: Could not initialize tracker - {e}")
+        print(f"[!] Warning: Could not initialize tracker - {e}")
 
 def initialize_trade_history():
     """Initialize trade history file for tracking outcomes"""
@@ -46,9 +46,9 @@ def initialize_trade_history():
                 'capital', 'exit_date', 'exit_z', 'exit_reason', 'win'
             ])
             history.to_csv(HISTORY_FILE, index=False)
-            print(f"✓ Initialized trade history: {HISTORY_FILE}")
+            print(f"[OK] Initialized trade history: {HISTORY_FILE}")
     except Exception as e:
-        print(f"⚠️  Warning: Could not initialize trade history - {e}")
+        print(f"[!] Warning: Could not initialize trade history - {e}")
 
 def add_open_pair(stock1, stock2, signal, z_score, capital_allocation, order1_id, order2_id):
     """Record a newly opened pair position"""
@@ -74,10 +74,10 @@ def add_open_pair(stock1, stock2, signal, z_score, capital_allocation, order1_id
         tracker = pd.concat([tracker, new_entry], ignore_index=True)
         tracker.to_csv(TRACKER_FILE, index=False)
         
-        print(f"  ✓ Tracked in open_pairs.csv")
+        print(f"  [OK] Tracked in open_pairs.csv")
         
     except Exception as e:
-        print(f"  ⚠️  Warning: Could not track pair - {e}")
+        print(f"  [!] Warning: Could not track pair - {e}")
 
 def log_trade_entry(stock1, stock2, signal, z_score, capital_allocation):
     """Log trade entry to history file for later outcome tracking"""
@@ -102,10 +102,10 @@ def log_trade_entry(stock1, stock2, signal, z_score, capital_allocation):
         else:
             entry_log.to_csv(HISTORY_FILE, index=False)
         
-        print(f"  ✓ Logged to trade_history.csv")
+        print(f"  [OK] Logged to trade_history.csv")
         
     except Exception as e:
-        print(f"  ⚠️  Warning: Could not log trade entry - {e}")
+        print(f"  [!] Warning: Could not log trade entry - {e}")
 
 def reconcile_with_alpaca(trading_client):
     """Reconcile tracker with actual Alpaca positions"""
@@ -116,13 +116,13 @@ def reconcile_with_alpaca(trading_client):
         tracker = pd.read_csv(TRACKER_FILE)
         
         if len(tracker) == 0:
-            print("  ✓ No open pairs to reconcile\n")
+            print("  [OK] No open pairs to reconcile\n")
             return
         
         open_tracker = tracker[tracker['status'] == 'open']
         
         if len(open_tracker) == 0:
-            print("  ✓ No open pairs to reconcile\n")
+            print("  [OK] No open pairs to reconcile\n")
             return
         
         # Get current Alpaca positions
@@ -137,19 +137,19 @@ def reconcile_with_alpaca(trading_client):
             
             # If either leg is missing from Alpaca, close the pair in tracker
             if stock1 not in current_holdings or stock2 not in current_holdings:
-                print(f"  ⚠️  Pair {stock1}/{stock2} incomplete - closing in tracker")
+                print(f"  [!] Pair {stock1}/{stock2} incomplete - closing in tracker")
                 tracker.loc[idx, 'status'] = 'closed'
                 tracker.loc[idx, 'exit_date'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
                 changes_made = True
         
         if changes_made:
             tracker.to_csv(TRACKER_FILE, index=False)
-            print("  ✓ Reconciliation complete\n")
+            print("  [OK] Reconciliation complete\n")
         else:
-            print("  ✓ All tracked pairs match Alpaca\n")
+            print("  [OK] All tracked pairs match Alpaca\n")
         
     except Exception as e:
-        print(f"  ⚠️  Warning: Could not reconcile - {e}\n")
+        print(f"  [!] Warning: Could not reconcile - {e}\n")
 
 # ============================================================================
 # MAIN EXECUTION LOGIC
@@ -200,7 +200,7 @@ for idx, row in signals_df.iterrows():
     
     # Skip if positions exist (shouldn't happen if sizing.py ran recently)
     if stock1 in current_holdings or stock2 in current_holdings:
-        print(f"⚠️  Skipping - existing positions detected")
+        print(f"[!] Skipping - existing positions detected")
         skipped_trades.append({
             'stock1': stock1,
             'stock2': stock2,
@@ -238,7 +238,7 @@ for idx, row in signals_df.iterrows():
             time_in_force=TimeInForce.DAY
         ))
         
-        print(f"✓ Executed:")
+        print(f"[OK] Executed:")
         print(f"  {stock1}: {side1.value} {shares1} @ ${row['price1']:.2f} (${shares1 * row['price1']:,.2f})")
         print(f"  {stock2}: {side2.value} {shares2} @ ${row['price2']:.2f} (${shares2 * row['price2']:,.2f})")
         
@@ -280,7 +280,7 @@ for idx, row in signals_df.iterrows():
         })
         
     except Exception as e:
-        print(f"✗ Error executing trade: {e}")
+        print(f"[X] Error executing trade: {e}")
         skipped_trades.append({
             'stock1': stock1,
             'stock2': stock2,
@@ -297,18 +297,18 @@ if executed_trades:
     trades_df = pd.DataFrame(executed_trades)
     trades_df.to_csv("data/executed_trades.csv", index=False)
     
-    print(f"✓ Successfully Executed: {len(executed_trades)} pairs")
+    print(f"[OK] Successfully Executed: {len(executed_trades)} pairs")
     print(f"  Total Capital Deployed: ${trades_df['capital_allocation'].sum():,.2f}")
     print(f"  Average Position Size: ${trades_df['capital_allocation'].mean():,.2f}")
     print(f"  Total Kelly Fraction: {trades_df['kelly_fraction'].sum():.2%}")
 else:
-    print("✗ No trades executed")
+    print("[X] No trades executed")
 
 if skipped_trades:
     skipped_df = pd.DataFrame(skipped_trades)
     skipped_df.to_csv("data/skipped_trades.csv", index=False)
     
-    print(f"\n⚠️  Skipped: {len(skipped_trades)} pairs")
+    print(f"\n[!] Skipped: {len(skipped_trades)} pairs")
     print(f"  Lost Capital: ${skipped_df['capital_allocation'].sum():,.2f}")
     print("\nSkipped trades saved to data/skipped_trades.csv")
 
