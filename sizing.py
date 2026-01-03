@@ -40,22 +40,13 @@ current_holdings = {p.symbol for p in positions}
 def calculate_adaptive_win_probability(z_score):
     """
     Calculate win probability using historical trade data when available,
-    falling back to theoretical estimates.
+    falling back to theoretical baseline.
     
     NOTE: Only uses trades with definitive outcomes (win=0 or win=1).
     Manual liquidations (win=None) are excluded from win rate calculations.
     """
-    abs_z = abs(z_score)
-    
-    # Theoretical baseline
-    if abs_z < 2.5:
-        theoretical = 0.65
-    elif abs_z < 3.0:
-        theoretical = 0.72
-    elif abs_z < 3.5:
-        theoretical = 0.77
-    else:
-        theoretical = 0.80
+    # Conservative flat baseline - mean reversion has a slight edge
+    theoretical = 0.51
     
     # Try to use empirical data if available
     if os.path.exists("data/trade_history.csv"):
@@ -70,20 +61,14 @@ def calculate_adaptive_win_probability(z_score):
             ]
             
             if len(completed) >= 10:  # Minimum sample size
-                # Filter similar z-score ranges (±0.5)
-                similar_trades = completed[
-                    (completed['entry_z'].abs() >= abs_z - 0.5) & 
-                    (completed['entry_z'].abs() <= abs_z + 0.5)
-                ]
-                
-                if len(similar_trades) >= 5:
-                    empirical_win_rate = similar_trades['win'].mean()
-                    # Blend: 60% empirical, 40% theoretical
-                    blended = 0.6 * empirical_win_rate + 0.4 * theoretical
-                    print(f"  Using blended win prob for |Z|={abs_z:.1f}: "
-                          f"{blended:.1%} (empirical: {empirical_win_rate:.1%}, "
-                          f"n={len(similar_trades)} definitive outcomes)")
-                    return blended
+                # Use all completed trades for overall win rate
+                empirical_win_rate = completed['win'].mean()
+                # Blend: 60% empirical, 40% theoretical
+                blended = 0.6 * empirical_win_rate + 0.4 * theoretical
+                print(f"  Using blended win prob: "
+                      f"{blended:.1%} (empirical: {empirical_win_rate:.1%}, "
+                      f"n={len(completed)} definitive outcomes)")
+                return blended
                     
         except Exception as e:
             print(f"  Warning: Could not load trade history - {e}")
