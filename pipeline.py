@@ -4,30 +4,47 @@ import os
 from datetime import datetime
 
 def run_script(script_name, description):
-    """Run a Python script and handle errors."""
+    """Run a Python script and stream output in real-time."""
     print(f"\n{'='*70}")
     print(f"[{datetime.now().strftime('%H:%M:%S')}] {description}")
     print(f"Running: {script_name}")
     print('='*70)
     
     try:
-        result = subprocess.run(
-            [sys.executable, script_name],
-            check=True,
-            capture_output=True,
-            text=True
+        # Use Popen instead of run to stream output in real-time
+        # -u flag forces unbuffered output from Python subprocesses
+        process = subprocess.Popen(
+            [sys.executable, '-u', script_name],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            bufsize=1,  # Line buffered
+            universal_newlines=True
         )
-        print(result.stdout)
-        if result.stderr:
-            print("STDERR:", result.stderr)
-        print(f"✓ {script_name} completed successfully")
-        return True
-    except subprocess.CalledProcessError as e:
-        print(f"✗ Error running {script_name}")
-        print(f"Exit code: {e.returncode}")
-        print(f"STDOUT: {e.stdout}")
-        print(f"STDERR: {e.stderr}")
-        return False
+        
+        # Stream stdout in real-time
+        while True:
+            output = process.stdout.readline()
+            if output == '' and process.poll() is not None:
+                break
+            if output:
+                print(output.rstrip())
+        
+        # Capture any remaining stderr
+        stderr = process.stderr.read()
+        if stderr:
+            print("STDERR:", stderr)
+        
+        # Get return code
+        return_code = process.poll()
+        
+        if return_code == 0:
+            print(f"✓ {script_name} completed successfully")
+            return True
+        else:
+            print(f"✗ {script_name} failed with exit code {return_code}")
+            return False
+            
     except Exception as e:
         print(f"✗ Unexpected error: {e}")
         return False
