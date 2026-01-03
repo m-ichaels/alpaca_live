@@ -5,7 +5,7 @@ from alpaca.trading.client import TradingClient
 from alpaca.trading.requests import MarketOrderRequest
 from alpaca.trading.enums import OrderSide, TimeInForce
 from alpaca.data.historical import StockHistoricalDataClient
-from alpaca.data.requests import StockLatestQuoteRequest
+from alpaca.data.requests import StockLatestQuoteRequest, StockLatestTradeRequest
 from auth import KEY, SECRET
 
 # Connect to Alpaca Paper Trading
@@ -15,52 +15,124 @@ data_client = StockHistoricalDataClient(KEY, SECRET)
 TRACKER_FILE = "data/open_pairs.csv"
 HISTORY_FILE = "data/trade_history.csv"
 
-def get_latest_price(symbol):
-    """Get latest price for a symbol"""
+def get_position_side(symbol, positions_dict):
+    """
+    Check if we have an open position and return 'LONG' or 'SHORT'
+    Uses pre-fetched positions dict for efficiency
+    """
+    if symbol in positions_dict:
+        qty = float(positions_dict[symbol].qty)
+        return 'LONG' if qty > 0 else 'SHORT'
+    return None
+
+def get_exit_price(symbol, positions_dict):
+    """
+    Get the correct exit price for a position:
+    - If LONG position: use BID (we're selling)
+    - If SHORT position: use ASK (we're buying to cover)
+    - If no position: use last trade price as fallback
+    """
     try:
-        request = StockLatestQuoteRequest(symbol_or_symbols=symbol)
-        quote = data_client.get_stock_latest_quote(request)
-        return float(quote[symbol].ask_price)
-    except:
+        position_side = get_position_side(symbol, positions_dict)
+        
+        quote_request = StockLatestQuoteRequest(symbol_or_symbols=symbol)
+        quote = data_client.get_stock_latest_quote(quote_request)
+        
+        if symbol not in quote:
+            return None
+        
+        if position_side == 'LONG':
+            # Exiting a long = selling = use BID price
+            price = quote[symbol].bid_price
+        elif position_side == 'SHORT':
+            # Exiting a short = buying to cover = use ASK price
+            price = quote[symbol].ask_price
+        else:
+            # No position - fall back to last trade price or mid price
+            try:
+                trade_request = StockLatestTradeRequest(symbol_or_symbols=symbol)
+                trade = data_client.get_stock_latest_trade(trade_request)
+                if symbol in trade and trade[symbol].price:
+                    price = trade[symbol].price
+                else:
+                    # Use mid price as last resort
+                    if quote[symbol].bid_price and quote[symbol].ask_price:
+                        price = (float(quote[symbol].bid_price) + float(quote[symbol].ask_price)) / 2
+                    else:
+                        price = quote[symbol].ask_price or quote[symbol].bid_price
+            except:
+                # Use mid price as last resort
+                if quote[symbol].bid_price and quote[symbol].ask_price:
+                    price = (float(quote[symbol].bid_price) + float(quote[symbol].ask_price)) / 2
+                else:
+                    price = quote[symbol].ask_price or quote[symbol].bid_price
+        
+        if price and float(price) > 0:
+            return float(price)
+        
+        return None
+        
+    except Exception as e:
+        print(f"      Warning: Could not get exit price for {symbol}: {e}")
         return None
 
-def calculate_exit_z_score(stock1, stock2, beta):
+def calculate_exit_z_score(stock1, stock2, beta, entry_z, positions_dict):
     """
-    Calculate current z-score for a pair using THE EXACT SAME beta from entry.
-    This ensures consistency between entry and exit calculations.
+    Calculate current z-score using THE EXACT SAME statistics as entry.
+    
+    Uses the correct bid/ask prices based on position direction:
+    - LONG position: use BID (we're selling)
+    - SHORT position: use ASK (we're buying to cover)
+    - No position: use last trade or mid price
     """
     try:
-        # Load historical data
+        # Load historical data (same as entry calculation)
         prices_df = pd.read_csv("data/sp500_prices_clean.csv")
         prices_df['date'] = pd.to_datetime(prices_df['date'])
         prices_df = prices_df.set_index('date')
         
-        # Get current prices
-        p1 = get_latest_price(stock1)
-        p2 = get_latest_price(stock2)
+        # Calculate historical spread using the SAME beta
+        historical_spread = prices_df[stock1] - (beta * prices_df[stock2])
         
-        if p1 is None or p2 is None:
+        # Get statistics from HISTORICAL data only (frozen at time of entry)
+        mu = historical_spread.mean()
+        sigma = historical_spread.std()
+        
+        # Get CURRENT exit prices (bid for longs, ask for shorts, or fallback)
+        current_p1 = get_exit_price(stock1, positions_dict)
+        current_p2 = get_exit_price(stock2, positions_dict)
+        
+        if current_p1 is None or current_p2 is None:
+            print(f"      ERROR: Could not get valid prices ({stock1}={current_p1}, {stock2}={current_p2})")
             return None
         
-        # Calculate current spread using THE EXACT SAME beta from entry
-        current_spread = p1 - (beta * p2)
+        if current_p1 <= 0 or current_p2 <= 0:
+            print(f"      ERROR: Invalid prices ({stock1}={current_p1}, {stock2}={current_p2})")
+            return None
         
-        # Get historical spread statistics using THE EXACT SAME beta
-        hist_spread = prices_df[stock1] - (beta * prices_df[stock2])
-        mu, sigma = hist_spread.mean(), hist_spread.std()
+        # Calculate CURRENT spread using same beta
+        current_spread = current_p1 - (beta * current_p2)
         
-        # Calculate z-score
+        # Calculate z-score: how many standard deviations is current spread from historical mean?
         current_z = (current_spread - mu) / sigma
+        
+        print(f"      Entry Z: {entry_z:.2f}, Exit Z: {current_z:.2f}, Change: {current_z - entry_z:.2f}")
+        print(f"      Prices: {stock1}=${current_p1:.2f}, {stock2}=${current_p2:.2f}")
+        print(f"      Spread: current={current_spread:.2f}, μ={mu:.2f}, σ={sigma:.2f}")
+        
         return current_z
         
     except Exception as e:
-        print(f"    Warning: Could not calculate z-score - {e}")
+        print(f"      Warning: Could not calculate z-score - {e}")
+        import traceback
+        traceback.print_exc()
         return None
 
-def log_liquidated_trades():
+def log_liquidated_trades(positions_before_liquidation):
     """
     Log all open trades as liquidated and REMOVE them from tracker.
     Uses stored hedge ratio from tracker for consistency.
+    Takes positions snapshot from BEFORE liquidation.
     """
     try:
         if not os.path.exists(TRACKER_FILE):
@@ -83,6 +155,9 @@ def log_liquidated_trades():
         
         print(f"\n  Logging {len(open_pairs)} liquidated trades to history...")
         
+        # Create positions dict for efficient lookup
+        positions_dict = {pos.symbol: pos for pos in positions_before_liquidation}
+        
         pairs_to_remove = []
         
         for idx, row in open_pairs.iterrows():
@@ -90,10 +165,11 @@ def log_liquidated_trades():
             
             # USE THE STORED HEDGE RATIO FROM TRACKER (exact same as entry!)
             beta = row['hedge_ratio']
+            entry_z = row['z_score']
             
-            print(f"    Processing {stock1}/{stock2} (beta={beta:.4f})...")
+            print(f"\n    Processing {stock1}/{stock2} (beta={beta:.4f})...")
             
-            exit_z = calculate_exit_z_score(stock1, stock2, beta)
+            exit_z = calculate_exit_z_score(stock1, stock2, beta, entry_z, positions_dict)
             
             # Update trade history
             if os.path.exists(HISTORY_FILE):
@@ -112,7 +188,7 @@ def log_liquidated_trades():
                     history.loc[mask, 'win'] = None  # Neutral - not counted in win rate
                     
                     history.to_csv(HISTORY_FILE, index=False)
-                    z_str = f"entry_z={row['z_score']:.2f}, exit_z={exit_z:.2f}" if exit_z is not None else "z=unknown"
+                    z_str = f"entry_z={entry_z:.2f}, exit_z={exit_z:.2f}" if exit_z is not None else "z=unknown"
                     print(f"      ✓ Logged to history ({z_str})")
                 else:
                     print(f"      ! Trade not found in history")
@@ -143,14 +219,21 @@ try:
 except Exception as e:
     print(f"✗ Error canceling orders: {e}")
 
+# GET POSITIONS SNAPSHOT BEFORE LIQUIDATING
+print("\nGetting positions snapshot...")
+try:
+    positions_before = trading_client.get_all_positions()
+    print(f"✓ Captured {len(positions_before)} positions")
+except Exception as e:
+    print(f"✗ Error getting positions: {e}")
+    positions_before = []
+
 print("\nLiquidating all positions...")
 try:
-    positions = trading_client.get_all_positions()
-    
-    if not positions:
+    if not positions_before:
         print("✓ No positions to liquidate")
     else:
-        for position in positions:
+        for position in positions_before:
             symbol = position.symbol
             qty = abs(float(position.qty))
             side = OrderSide.SELL if float(position.qty) > 0 else OrderSide.BUY
@@ -167,13 +250,14 @@ try:
             except Exception as e:
                 print(f"  ✗ {symbol}: Error - {e}")
         
-        print(f"\n✓ Liquidation complete - closed {len(positions)} positions")
+        print(f"\n✓ Liquidation complete - closed {len(positions_before)} positions")
 except Exception as e:
     print(f"✗ Error liquidating positions: {e}")
 
 # Log all liquidated trades and REMOVE from tracker
+# Pass the positions snapshot from BEFORE liquidation
 print("\nUpdating trade records...")
-log_liquidated_trades()
+log_liquidated_trades(positions_before)
 
 print("\n" + "=" * 80)
 print("Liquidation complete. Manual exits logged as neutral (not counted in win rate).")

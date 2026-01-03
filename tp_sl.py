@@ -16,10 +16,57 @@ HISTORY_FILE = "data/trade_history.csv"
 trading_client = TradingClient(KEY, SECRET, paper=True)
 data_client = StockHistoricalDataClient(KEY, SECRET)
 
-def get_latest_price(symbol):
-    request = StockLatestQuoteRequest(symbol_or_symbols=symbol)
-    quote = data_client.get_stock_latest_quote(request)
-    return float(quote[symbol].ask_price)
+def get_position_side(symbol):
+    """
+    Check if we have an open position and return 'LONG' or 'SHORT'
+    Returns None if no position exists
+    """
+    try:
+        positions = trading_client.get_all_positions()
+        for pos in positions:
+            if pos.symbol == symbol:
+                qty = float(pos.qty)
+                return 'LONG' if qty > 0 else 'SHORT'
+        return None
+    except:
+        return None
+
+def get_exit_price(symbol):
+    """
+    Get the correct exit price for a position:
+    - If LONG position: use BID (we're selling)
+    - If SHORT position: use ASK (we're buying to cover)
+    """
+    try:
+        position_side = get_position_side(symbol)
+        
+        if position_side is None:
+            print(f"      Warning: No position found for {symbol}")
+            return None
+        
+        quote_request = StockLatestQuoteRequest(symbol_or_symbols=symbol)
+        quote = data_client.get_stock_latest_quote(quote_request)
+        
+        if symbol not in quote:
+            return None
+        
+        if position_side == 'LONG':
+            # Exiting a long = selling = use BID price
+            price = quote[symbol].bid_price
+            price_type = "bid"
+        else:  # SHORT
+            # Exiting a short = buying to cover = use ASK price
+            price = quote[symbol].ask_price
+            price_type = "ask"
+        
+        if price and float(price) > 0:
+            return float(price)
+        
+        return None
+        
+    except Exception as e:
+        print(f"      Warning: Could not get exit price for {symbol}: {e}")
+        return None
 
 def remove_pair_from_tracker(stock1, stock2):
     """REMOVE a pair from the tracker (not just mark as closed)"""
@@ -88,33 +135,43 @@ def log_trade_outcome(stock1, stock2, exit_z, exit_reason):
     except Exception as e:
         print(f"  [!] Warning: Could not log trade outcome - {e}")
 
-def calculate_exit_z_score(stock1, stock2, beta):
+def calculate_current_z_score(stock1, stock2, beta, entry_z):
     """
-    Calculate current z-score using THE EXACT SAME beta from entry.
-    This ensures consistency between entry and exit calculations.
+    Calculate current z-score using THE EXACT SAME statistics as entry.
+    
+    Uses the correct bid/ask prices based on position direction:
+    - LONG position: use BID (we're selling)
+    - SHORT position: use ASK (we're buying to cover)
     """
     try:
-        # Load historical data
+        # Load historical data (same as entry calculation)
         prices_df = pd.read_csv("data/sp500_prices_clean.csv")
         prices_df['date'] = pd.to_datetime(prices_df['date'])
         prices_df = prices_df.set_index('date')
         
-        # Get current prices
-        p1 = get_latest_price(stock1)
-        p2 = get_latest_price(stock2)
+        # Calculate historical spread using the SAME beta
+        historical_spread = prices_df[stock1] - (beta * prices_df[stock2])
         
-        if p1 is None or p2 is None:
+        # Get statistics from HISTORICAL data only (frozen at time of entry)
+        mu = historical_spread.mean()
+        sigma = historical_spread.std()
+        
+        # Get CURRENT exit prices (bid for longs, ask for shorts)
+        current_p1 = get_exit_price(stock1)
+        current_p2 = get_exit_price(stock2)
+        
+        if current_p1 is None or current_p2 is None:
             return None
         
-        # Calculate current spread using THE EXACT SAME beta from entry
-        current_spread = p1 - (beta * p2)
+        if current_p1 <= 0 or current_p2 <= 0:
+            return None
         
-        # Get historical spread statistics using THE EXACT SAME beta
-        hist_spread = prices_df[stock1] - (beta * prices_df[stock2])
-        mu, sigma = hist_spread.mean(), hist_spread.std()
+        # Calculate CURRENT spread using same beta
+        current_spread = current_p1 - (beta * current_p2)
         
-        # Calculate z-score
+        # Calculate z-score: how many standard deviations is current spread from historical mean?
         current_z = (current_spread - mu) / sigma
+        
         return current_z
         
     except Exception as e:
@@ -159,10 +216,11 @@ def manage_open_trades():
         
         # USE THE STORED HEDGE RATIO FROM TRACKER (exact same as entry!)
         beta = row['hedge_ratio']
+        entry_z = row['z_score']
         
-        # Calculate CURRENT spread and Z-score
+        # Calculate CURRENT z-score using SAME statistics as entry
         try:
-            current_z = calculate_exit_z_score(s1, s2, beta)
+            current_z = calculate_current_z_score(s1, s2, beta, entry_z)
             
             if current_z is None:
                 print(f"\n{s1}/{s2}")
@@ -170,7 +228,7 @@ def manage_open_trades():
                 continue
             
             print(f"\n{s1}/{s2}")
-            print(f"  Entry Z: {row['z_score']:.2f}, Current Z: {current_z:.2f}")
+            print(f"  Entry Z: {entry_z:.2f}, Current Z: {current_z:.2f}, Change: {current_z - entry_z:.2f}")
             print(f"  Signal: {row['signal']}, Capital: ${row['capital_allocation']:,.2f}")
             print(f"  Beta: {beta:.4f}")
             
