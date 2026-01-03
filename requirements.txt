@@ -1,0 +1,19 @@
+# Data Manipulation and Analysis
+pandas
+numpy
+scipy
+
+# Financial Data and Trading API
+alpaca-py
+
+# Statistical Modeling
+statsmodels
+
+# Web Scraping (for S&P 500 list)
+requests
+lxml
+beautifulsoup4
+
+# Dashboard and Visualization
+dash
+plotly
