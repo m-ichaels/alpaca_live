@@ -11,6 +11,7 @@ from auth import KEY, SECRET
 # ============================================================================
 
 TRACKER_FILE = "data/open_pairs.csv"
+HISTORY_FILE = "data/trade_history.csv"
 
 def initialize_tracker():
     """Initialize tracker file with proper columns if it doesn't exist or is empty"""
@@ -35,6 +36,19 @@ def initialize_tracker():
         
     except Exception as e:
         print(f"⚠️  Warning: Could not initialize tracker - {e}")
+
+def initialize_trade_history():
+    """Initialize trade history file for tracking outcomes"""
+    try:
+        if not os.path.exists(HISTORY_FILE):
+            history = pd.DataFrame(columns=[
+                'stock1', 'stock2', 'entry_date', 'entry_z', 'signal', 
+                'capital', 'exit_date', 'exit_z', 'exit_reason', 'win'
+            ])
+            history.to_csv(HISTORY_FILE, index=False)
+            print(f"✓ Initialized trade history: {HISTORY_FILE}")
+    except Exception as e:
+        print(f"⚠️  Warning: Could not initialize trade history - {e}")
 
 def add_open_pair(stock1, stock2, signal, z_score, capital_allocation, order1_id, order2_id):
     """Record a newly opened pair position"""
@@ -65,6 +79,33 @@ def add_open_pair(stock1, stock2, signal, z_score, capital_allocation, order1_id
     except Exception as e:
         print(f"  ⚠️  Warning: Could not track pair - {e}")
 
+def log_trade_entry(stock1, stock2, signal, z_score, capital_allocation):
+    """Log trade entry to history file for later outcome tracking"""
+    try:
+        initialize_trade_history()
+        
+        entry_log = pd.DataFrame([{
+            'stock1': stock1,
+            'stock2': stock2,
+            'entry_date': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+            'entry_z': z_score,
+            'signal': signal,
+            'capital': capital_allocation,
+            'exit_date': None,
+            'exit_z': None,
+            'exit_reason': None,
+            'win': None
+        }])
+        
+        if os.path.exists(HISTORY_FILE):
+            entry_log.to_csv(HISTORY_FILE, mode='a', header=False, index=False)
+        else:
+            entry_log.to_csv(HISTORY_FILE, index=False)
+        
+        print(f"  ✓ Logged to trade_history.csv")
+        
+    except Exception as e:
+        print(f"  ⚠️  Warning: Could not log trade entry - {e}")
 
 def reconcile_with_alpaca(trading_client):
     """Reconcile tracker with actual Alpaca positions"""
@@ -117,8 +158,9 @@ def reconcile_with_alpaca(trading_client):
 # Ensure data directory exists
 os.makedirs("data", exist_ok=True)
 
-# Initialize tracker file
+# Initialize tracker and history files
 initialize_tracker()
+initialize_trade_history()
 
 # Connect to Alpaca
 trading_client = TradingClient(KEY, SECRET, paper=True)
@@ -209,6 +251,15 @@ for idx, row in signals_df.iterrows():
             capital_allocation=row['capital_allocation'],
             order1_id=order1.id,
             order2_id=order2.id
+        )
+        
+        # Log entry to trade history
+        log_trade_entry(
+            stock1=stock1,
+            stock2=stock2,
+            signal=signal,
+            z_score=row['z_score'],
+            capital_allocation=row['capital_allocation']
         )
         
         executed_trades.append({

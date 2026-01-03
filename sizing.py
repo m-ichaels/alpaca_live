@@ -1,17 +1,30 @@
 import pandas as pd
 import numpy as np
+import os
+import importlib.util
 from alpaca.trading.client import TradingClient
 from alpaca.data.historical import StockHistoricalDataClient
 from alpaca.data.requests import StockLatestQuoteRequest
 from auth import KEY, SECRET
 from scipy.stats import norm
 
+# Load TP/SL parameters from tp_sl.py
+spec = importlib.util.spec_from_file_location("tp_sl", "tp_sl.py")
+tp_sl_module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(tp_sl_module)
+
+TAKE_PROFIT_Z = tp_sl_module.TAKE_PROFIT_Z
+STOP_LOSS_Z = tp_sl_module.STOP_LOSS_Z
+
 # Connect to Alpaca
 trading_client = TradingClient(KEY, SECRET, paper=True)
 data_client = StockHistoricalDataClient(KEY, SECRET)
 
-# Load signals
+# Load signals and historical prices for spread statistics
 signals_df = pd.read_csv("data/entry_signals.csv")
+prices_df = pd.read_csv("data/sp500_prices_clean.csv")
+prices_df['date'] = pd.to_datetime(prices_df['date'])
+prices_df = prices_df.set_index('date')
 
 # Get account equity
 account = trading_client.get_account()
@@ -24,41 +37,132 @@ print(f"Processing {len(signals_df)} signals for Kelly sizing\n")
 positions = trading_client.get_all_positions()
 current_holdings = {p.symbol for p in positions}
 
-def estimate_win_probability(z_score):
+def calculate_adaptive_win_probability(z_score):
     """
-    More realistic win probability based on statistical properties
-    Uses normal distribution CDF - probability that z-score will revert
+    Calculate win probability using historical trade data when available,
+    falling back to theoretical estimates
     """
     abs_z = abs(z_score)
     
-    # For z > threshold, probability it reverts (goes back toward mean)
-    # This is more conservative than the original formula
-    if abs_z < 1.5:
-        return 0.55  # Weak signal
-    elif abs_z < 2.0:
-        return 0.65  # Moderate signal
-    elif abs_z < 2.5:
-        return 0.72  # Strong signal
+    # Theoretical baseline
+    if abs_z < 2.5:
+        theoretical = 0.65
     elif abs_z < 3.0:
-        return 0.77  # Very strong signal
+        theoretical = 0.72
+    elif abs_z < 3.5:
+        theoretical = 0.77
     else:
-        return 0.80  # Extreme signal (cap at 80%)
+        theoretical = 0.80
+    
+    # Try to use empirical data if available
+    if os.path.exists("data/trade_history.csv"):
+        try:
+            history = pd.read_csv("data/trade_history.csv")
+            completed = history[history['exit_date'].notna()]
+            
+            if len(completed) >= 10:  # Minimum sample size
+                # Filter similar z-score ranges (±0.5)
+                similar_trades = completed[
+                    (completed['entry_z'].abs() >= abs_z - 0.5) & 
+                    (completed['entry_z'].abs() <= abs_z + 0.5)
+                ]
+                
+                if len(similar_trades) >= 5:
+                    empirical_win_rate = similar_trades['win'].mean()
+                    # Blend: 60% empirical, 40% theoretical
+                    blended = 0.6 * empirical_win_rate + 0.4 * theoretical
+                    print(f"  Using blended win prob for |Z|={abs_z:.1f}: "
+                          f"{blended:.1%} (empirical: {empirical_win_rate:.1%}, n={len(similar_trades)})")
+                    return blended
+        except Exception as e:
+            print(f"  Warning: Could not load trade history - {e}")
+    
+    return theoretical
 
-def estimate_win_loss_ratio(z_score, volatility_percentile=50):
+def calculate_kelly_parameters(z_score, spread_mean, spread_std):
     """
-    Expected profit/loss ratio based on mean reversion distance
-    Higher z-scores suggest more reversion potential
+    Calculate Kelly based on actual TP/SL levels from tp_sl.py
     """
-    abs_z = abs(z_score)
+    current_z = z_score
+    abs_z = abs(current_z)
     
-    # Base ratio increases with z-score (more room to revert)
-    base_ratio = 1.0 + (abs_z - 1.5) * 0.4
+    # Calculate actual dollar distances to TP and SL
+    if current_z > 0:  # Short spread (Z too high)
+        profit_distance = abs(current_z - TAKE_PROFIT_Z)
+        loss_distance = abs(STOP_LOSS_Z - current_z)
+    else:  # Long spread (Z too low)
+        profit_distance = abs(current_z + TAKE_PROFIT_Z)
+        loss_distance = abs(-STOP_LOSS_Z - current_z)
     
-    # Cap between reasonable bounds
-    return max(1.2, min(2.5, base_ratio))
+    # Convert to dollar terms
+    expected_profit = profit_distance * spread_std
+    expected_loss = loss_distance * spread_std
+    
+    # Win/loss ratio from actual TP/SL
+    win_loss_ratio = expected_profit / expected_loss if expected_loss > 0 else 1.0
+    
+    # Adaptive win probability
+    win_prob = calculate_adaptive_win_probability(z_score)
+    
+    # Kelly formula: f = (p*b - q) / b
+    loss_prob = 1 - win_prob
+    kelly_fraction = (win_prob * win_loss_ratio - loss_prob) / win_loss_ratio
+    
+    # Conservative 1/3 Kelly
+    kelly_fraction = max(0, kelly_fraction) * 0.33
+    
+    # Cap at 8% per pair
+    kelly_fraction = min(kelly_fraction, 0.08)
+    
+    return kelly_fraction, win_prob, win_loss_ratio
+
+def calculate_hedge_positions(capital, price1, price2, beta):
+    """
+    Calculate position sizes maintaining hedge ratio from regression.
+    
+    From: stock1 = alpha + beta * stock2
+    We need: (shares1 * price1) = beta * (shares2 * price2)
+    
+    Solving for capital allocation:
+    value_stock1 = beta * capital / (1 + beta)
+    value_stock2 = capital / (1 + beta)
+    """
+    # Allocate capital maintaining hedge ratio
+    value_stock2 = capital / (1 + abs(beta))
+    value_stock1 = abs(beta) * value_stock2
+    
+    # Convert to integer shares
+    shares1 = int(value_stock1 / price1)
+    shares2 = int(value_stock2 / price2)
+    
+    if shares1 < 1 or shares2 < 1:
+        return None, None, None, None
+    
+    # Calculate actual capital used
+    actual_value1 = shares1 * price1
+    actual_value2 = shares2 * price2
+    actual_capital = actual_value1 + actual_value2
+    
+    # Verify hedge ratio accuracy
+    actual_ratio = actual_value1 / actual_value2
+    expected_ratio = abs(beta)
+    hedge_error = abs(actual_ratio - expected_ratio) / expected_ratio * 100
+    
+    # If error > 5%, adjust shares2 to match shares1 exactly
+    if hedge_error > 5.0:
+        shares2 = int((shares1 * price1) / (abs(beta) * price2))
+        if shares2 < 1:
+            return None, None, None, None
+        
+        actual_value1 = shares1 * price1
+        actual_value2 = shares2 * price2
+        actual_capital = actual_value1 + actual_value2
+        hedge_error = abs((actual_value1/actual_value2) - abs(beta)) / abs(beta) * 100
+    
+    return shares1, shares2, actual_capital, hedge_error
 
 def check_trade_feasibility(stock1, stock2, beta, capital, signal):
-    """Check if we can execute trades with given capital"""
+    """Check if we can execute trade with proper hedge ratio"""
     try:
         quotes = data_client.get_stock_latest_quote(
             StockLatestQuoteRequest(symbol_or_symbols=[stock1, stock2])
@@ -67,23 +171,14 @@ def check_trade_feasibility(stock1, stock2, beta, capital, signal):
         price1 = (quotes[stock1].bid_price + quotes[stock1].ask_price) / 2
         price2 = (quotes[stock2].bid_price + quotes[stock2].ask_price) / 2
         
-        # Skip if prices are invalid
         if price1 <= 0 or price2 <= 0:
             return False, None, None, None, None, None
         
-        # Calculate shares with hedge ratio consideration
-        dollars_stock2 = capital / (1 + beta)
-        dollars_stock1 = capital - dollars_stock2
+        shares1, shares2, actual_capital, hedge_error = \
+            calculate_hedge_positions(capital, price1, price2, beta)
         
-        shares1 = int(dollars_stock1 / price1)
-        shares2 = int(dollars_stock2 / price2)
-        
-        # Need at least 1 share of each
-        if shares1 < 1 or shares2 < 1:
+        if shares1 is None or hedge_error > 10.0:
             return False, None, None, None, None, None
-        
-        # Calculate actual capital used (integer shares)
-        actual_capital = shares1 * price1 + shares2 * price2
         
         return True, shares1, shares2, price1, price2, actual_capital
     
@@ -102,22 +197,18 @@ for idx, row in signals_df.iterrows():
         continue
     
     z_score = row['z_score']
+    beta = row['hedge_ratio']
     abs_z = abs(z_score)
     
-    # Improved Kelly parameters
-    win_prob = estimate_win_probability(z_score)
-    win_loss_ratio = estimate_win_loss_ratio(z_score)
+    # Calculate spread statistics from historical data
+    spread = prices_df[stock1] - beta * prices_df[stock2]
+    spread_mean = spread.mean()
+    spread_std = spread.std()
     
-    # Kelly formula: f = (p * b - q) / b
-    # where p = win_prob, q = 1-p, b = win/loss ratio
-    loss_prob = 1 - win_prob
-    kelly_fraction = (win_prob * win_loss_ratio - loss_prob) / win_loss_ratio
-    
-    # Apply 1/3 Kelly for conservative sizing (less aggressive than 1/4)
-    kelly_fraction = max(0, kelly_fraction) * 0.33
-    
-    # Cap at 8% per pair for diversification
-    kelly_fraction = min(kelly_fraction, 0.08)
+    # Calculate Kelly using actual TP/SL levels
+    kelly_fraction, win_prob, win_loss_ratio = calculate_kelly_parameters(
+        z_score, spread_mean, spread_std
+    )
     
     raw_kelly_data.append({
         'stock1': row['stock1'],
@@ -128,7 +219,7 @@ for idx, row in signals_df.iterrows():
         'win_prob': win_prob,
         'win_loss_ratio': win_loss_ratio,
         'raw_kelly_fraction': kelly_fraction,
-        'priority': abs_z  # Use z-score as priority
+        'priority': abs_z
     })
 
 # Convert to DataFrame and sort by priority
@@ -137,15 +228,13 @@ kelly_df = kelly_df.sort_values('priority', ascending=False).reset_index(drop=Tr
 
 print(f"Raw Kelly Total: {kelly_df['raw_kelly_fraction'].sum():.2%}\n")
 
-# Pre-filter: Check all pairs for feasibility BEFORE allocation
+# Pre-filter for feasibility
 print("Pre-filtering for feasibility...")
 print("=" * 80)
 
 feasible_pairs = []
-infeasible_pairs = []
 
 for idx, row in kelly_df.iterrows():
-    # Test with a reasonable amount to see if trade is even possible
     test_capital = row['raw_kelly_fraction'] * total_equity
     
     feasible, s1, s2, p1, p2, actual_cap = check_trade_feasibility(
@@ -156,48 +245,39 @@ for idx, row in kelly_df.iterrows():
     if feasible:
         feasible_pairs.append({
             **row.to_dict(),
-            'min_capital': actual_cap,
             'price1': p1,
             'price2': p2
         })
-    else:
-        infeasible_pairs.append(row.to_dict())
 
-print(f"Feasible pairs: {len(feasible_pairs)}/{len(kelly_df)}")
-print(f"Infeasible pairs: {len(infeasible_pairs)}\n")
+print(f"Feasible pairs: {len(feasible_pairs)}/{len(kelly_df)}\n")
 
 if not feasible_pairs:
     print("No feasible pairs found!")
     exit(1)
 
-# Recalculate Kelly fractions based only on feasible pairs
+# Recalculate based only on feasible pairs
 feasible_df = pd.DataFrame(feasible_pairs)
 total_feasible_kelly = feasible_df['raw_kelly_fraction'].sum()
 
 print(f"Feasible Kelly Total: {total_feasible_kelly:.2%}")
 
-# Target allocation (95% of equity)
+# Target 95% of equity
 target_total_allocation = 0.95 * total_equity
 
-# Smart allocation: allocate proportionally with single-pass optimization
-print("\nOptimal Allocation (Single Pass):")
+# Scale Kelly fractions to hit target
+print("\nOptimal Allocation:")
 print("=" * 80)
 
 allocated_pairs = []
 allocated_capital = 0
 
-# If total Kelly < 95%, scale up proportionally
-# If total Kelly > 95%, scale down proportionally
 scaling_factor = min(target_total_allocation / (total_feasible_kelly * total_equity), 1.0)
-
 print(f"Scaling factor: {scaling_factor:.4f}\n")
 
 for idx, row in feasible_df.iterrows():
-    # Calculate target allocation
     target_kelly = row['raw_kelly_fraction'] * scaling_factor
     target_capital = target_kelly * total_equity
     
-    # Check feasibility at this allocation level
     feasible, s1, s2, p1, p2, actual_cap = check_trade_feasibility(
         row['stock1'], row['stock2'], row['hedge_ratio'], 
         target_capital, row['signal']
@@ -218,66 +298,28 @@ for idx, row in feasible_df.iterrows():
     else:
         print(f"✗ {row['stock1']:6s}/{row['stock2']:6s}: Failed at ${target_capital:>9,.2f}")
 
-# Second pass: Redistribute remaining capital if significant
-remaining_capital = target_total_allocation - allocated_capital
-
-if remaining_capital > 500 and allocated_pairs:
-    print(f"\nRedistribution Pass - ${remaining_capital:,.2f} remaining:")
-    print("=" * 80)
-    
-    # Sort by priority for redistribution
-    allocated_pairs.sort(key=lambda x: x['priority'], reverse=True)
-    
-    for pair in allocated_pairs:
-        if remaining_capital < 100:
-            break
-        
-        # Check if we can add more to this pair (respect 8% cap)
-        current_kelly = pair['kelly_fraction']
-        max_additional_kelly = 0.08 - current_kelly
-        
-        if max_additional_kelly < 0.005:  # Less than 0.5% room
-            continue
-        
-        # Try adding capital
-        additional = min(remaining_capital * 0.1, max_additional_kelly * total_equity)
-        new_total = pair['allocated_capital'] + additional
-        
-        feasible, s1, s2, p1, p2, actual_cap = check_trade_feasibility(
-            pair['stock1'], pair['stock2'], pair['hedge_ratio'],
-            new_total, pair['signal']
-        )
-        
-        if feasible and actual_cap > pair['allocated_capital']:
-            added = actual_cap - pair['allocated_capital']
-            remaining_capital -= added
-            allocated_capital += added
-            
-            pair['allocated_capital'] = actual_cap
-            pair['shares1'] = s1
-            pair['shares2'] = s2
-            pair['kelly_fraction'] = actual_cap / total_equity
-            
-            print(f"  + {pair['stock1']}/{pair['stock2']}: +${added:,.2f} → ${actual_cap:,.2f}")
-
 # Create final DataFrame
 final_df = pd.DataFrame(allocated_pairs)
 
 if len(final_df) > 0:
     final_df = final_df.sort_values('priority', ascending=False)
     
-    # Display top positions
+    # Display all positions
     print("\n" + "=" * 80)
-    print("FINAL ALLOCATION - Top 20 Positions:")
+    print(f"FINAL ALLOCATION - All {len(final_df)} Positions:")
     print("=" * 80)
-    for idx, row in final_df.head(20).iterrows():
+    for idx, row in final_df.iterrows():
+        val1 = row['shares1'] * row['price1']
+        val2 = row['shares2'] * row['price2']
+        actual_ratio = val1 / val2
+        hedge_error = abs(actual_ratio - abs(row['hedge_ratio'])) / abs(row['hedge_ratio']) * 100
+        
         print(f"{row['stock1']}/{row['stock2']}:")
         print(f"  Z-score: {row['z_score']:6.2f}, Signal: {row['signal']}")
-        print(f"  Win Prob: {row['win_prob']:.1%}, Win/Loss: {row['win_loss_ratio']:.2f}x")
-        print(f"  Kelly: {row['kelly_fraction']:.2%} (Raw: {row['raw_kelly_fraction']:.2%})")
-        print(f"  Capital: ${row['allocated_capital']:,.2f}")
-        print(f"  Trade: {row['shares1']} {row['stock1']} @ ${row['price1']:.2f}, "
-              f"{row['shares2']} {row['stock2']} @ ${row['price2']:.2f}\n")
+        print(f"  Kelly: {row['kelly_fraction']:.2%}, Capital: ${row['allocated_capital']:,.2f}")
+        print(f"  Trade: {row['shares1']} {row['stock1']} @ ${row['price1']:.2f} = ${val1:,.2f}")
+        print(f"        {row['shares2']} {row['stock2']} @ ${row['price2']:.2f} = ${val2:,.2f}")
+        print(f"  Hedge Ratio: {actual_ratio:.3f} (target: {abs(row['hedge_ratio']):.3f}, error: {hedge_error:.1f}%)\n")
     
     # Save sized signals
     output_cols = ['stock1', 'stock2', 'signal', 'z_score', 'hedge_ratio', 
@@ -287,26 +329,16 @@ if len(final_df) > 0:
     final_df['capital_allocation'] = final_df['allocated_capital']
     final_df[output_cols].to_csv("data/sized_signals.csv", index=False)
     
-    # Summary statistics
+    # Summary
     print("=" * 80)
     print("SUMMARY")
     print("=" * 80)
     print(f"Total Pairs: {len(final_df)}")
-    print(f"Infeasible Pairs: {len(infeasible_pairs)}")
     print(f"Total Capital Allocated: ${final_df['allocated_capital'].sum():,.2f}")
     print(f"Target Allocation: ${target_total_allocation:,.2f}")
     print(f"Allocation Efficiency: {final_df['allocated_capital'].sum() / target_total_allocation:.2%}")
     print(f"Portfolio Utilization: {final_df['allocated_capital'].sum() / total_equity:.2%}")
-    print(f"\nPosition Size Statistics:")
-    print(f"  Average: ${final_df['allocated_capital'].mean():,.2f}")
-    print(f"  Median:  ${final_df['allocated_capital'].median():,.2f}")
-    print(f"  Largest: ${final_df['allocated_capital'].max():,.2f}")
-    print(f"  Smallest: ${final_df['allocated_capital'].min():,.2f}")
-    print(f"\nKelly Statistics:")
-    print(f"  Max Kelly Fraction: {final_df['kelly_fraction'].max():.2%}")
-    print(f"  Total Kelly Fraction: {final_df['kelly_fraction'].sum():.2%}")
-    print(f"  Avg Win Probability: {final_df['win_prob'].mean():.1%}")
-    print(f"  Avg Win/Loss Ratio: {final_df['win_loss_ratio'].mean():.2f}x")
+    print(f"Total Kelly Fraction: {final_df['kelly_fraction'].sum():.2%}")
     print(f"\nSized signals saved to data/sized_signals.csv")
 else:
     print("\nNo feasible pairs found!")

@@ -11,6 +11,7 @@ from auth import KEY, SECRET
 TAKE_PROFIT_Z = 0.5    # Close when spread reverts near mean
 STOP_LOSS_Z = 4.0      # Close if divergence becomes extreme
 TRACKER_FILE = "data/open_pairs.csv"
+HISTORY_FILE = "data/trade_history.csv"
 
 trading_client = TradingClient(KEY, SECRET, paper=True)
 data_client = StockHistoricalDataClient(KEY, SECRET)
@@ -48,6 +49,43 @@ def close_pair_in_tracker(stock1, stock2):
     except Exception as e:
         print(f"  ⚠️  Warning: Could not close pair in tracker - {e}")
         return False
+
+def log_trade_outcome(stock1, stock2, exit_z, exit_reason):
+    """Log trade outcome to history file for win rate calculation"""
+    try:
+        if not os.path.exists(HISTORY_FILE):
+            print(f"  ⚠️  No trade history file found")
+            return
+        
+        history = pd.read_csv(HISTORY_FILE)
+        
+        # Find the open trade (check both orderings)
+        mask = (
+            ((history['stock1'] == stock1) & (history['stock2'] == stock2)) |
+            ((history['stock1'] == stock2) & (history['stock2'] == stock1))
+        ) & (history['exit_date'].isna())
+        
+        if mask.any():
+            history.loc[mask, 'exit_date'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            history.loc[mask, 'exit_z'] = exit_z
+            history.loc[mask, 'exit_reason'] = exit_reason
+            
+            # Determine win/loss: TARGET REACHED = win, STOP LOSS HIT = loss
+            history.loc[mask, 'win'] = 1 if exit_reason == "TARGET REACHED" else 0
+            
+            history.to_csv(HISTORY_FILE, index=False)
+            print(f"  ✓ Trade outcome logged to history")
+            
+            # Display updated win rate
+            completed = history[history['exit_date'].notna()]
+            if len(completed) >= 5:
+                win_rate = completed['win'].mean()
+                print(f"  📊 Overall win rate: {win_rate:.1%} ({completed['win'].sum()}/{len(completed)} wins)")
+        else:
+            print(f"  ⚠️  Trade not found in history")
+            
+    except Exception as e:
+        print(f"  ⚠️  Warning: Could not log trade outcome - {e}")
 
 def manage_open_trades():
     # 1. Load tracked open pairs
@@ -128,7 +166,8 @@ def manage_open_trades():
                     trading_client.close_position(s1)
                     trading_client.close_position(s2)
                     close_pair_in_tracker(s1, s2)
-                    print(f"  ✓ Positions closed in Alpaca and tracker updated")
+                    log_trade_outcome(s1, s2, current_z, close_reason)
+                    print(f"  ✓ Positions closed in Alpaca")
                 except Exception as e:
                     print(f"  ✗ Error closing positions: {e}")
             else:
