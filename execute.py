@@ -25,9 +25,9 @@ def initialize_tracker():
             except pd.errors.EmptyDataError:
                 pass  # File is empty, will recreate
         
-        # Create new tracker with proper columns
+        # Create new tracker with proper columns (NOW INCLUDING hedge_ratio)
         tracker = pd.DataFrame(columns=[
-            'stock1', 'stock2', 'signal', 'z_score', 
+            'stock1', 'stock2', 'signal', 'z_score', 'hedge_ratio',
             'capital_allocation', 'entry_date', 
             'order1_id', 'order2_id', 'status', 'exit_date'
         ])
@@ -50,7 +50,7 @@ def initialize_trade_history():
     except Exception as e:
         print(f"[!] Warning: Could not initialize trade history - {e}")
 
-def add_open_pair(stock1, stock2, signal, z_score, capital_allocation, order1_id, order2_id):
+def add_open_pair(stock1, stock2, signal, z_score, hedge_ratio, capital_allocation, order1_id, order2_id):
     """Record a newly opened pair position"""
     try:
         # Ensure tracker is initialized
@@ -63,6 +63,7 @@ def add_open_pair(stock1, stock2, signal, z_score, capital_allocation, order1_id
             'stock2': stock2,
             'signal': signal,
             'z_score': z_score,
+            'hedge_ratio': hedge_ratio,  # STORE HEDGE RATIO!
             'capital_allocation': capital_allocation,
             'entry_date': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
             'order1_id': order1_id,
@@ -242,12 +243,13 @@ for idx, row in signals_df.iterrows():
         print(f"  {stock1}: {side1.value} {shares1} @ ${row['price1']:.2f} (${shares1 * row['price1']:,.2f})")
         print(f"  {stock2}: {side2.value} {shares2} @ ${row['price2']:.2f} (${shares2 * row['price2']:,.2f})")
         
-        # Track this pair as open
+        # Track this pair as open (NOW STORING HEDGE RATIO)
         add_open_pair(
             stock1=stock1,
             stock2=stock2,
             signal=signal,
             z_score=row['z_score'],
+            hedge_ratio=row['hedge_ratio'],  # PASS HEDGE RATIO!
             capital_allocation=row['capital_allocation'],
             order1_id=order1.id,
             order2_id=order2.id

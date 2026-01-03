@@ -25,7 +25,10 @@ def get_latest_price(symbol):
         return None
 
 def calculate_exit_z_score(stock1, stock2, beta):
-    """Calculate current z-score for a pair"""
+    """
+    Calculate current z-score for a pair using THE EXACT SAME beta from entry.
+    This ensures consistency between entry and exit calculations.
+    """
     try:
         # Load historical data
         prices_df = pd.read_csv("data/sp500_prices_clean.csv")
@@ -39,10 +42,10 @@ def calculate_exit_z_score(stock1, stock2, beta):
         if p1 is None or p2 is None:
             return None
         
-        # Calculate current spread
+        # Calculate current spread using THE EXACT SAME beta from entry
         current_spread = p1 - (beta * p2)
         
-        # Get historical spread statistics
+        # Get historical spread statistics using THE EXACT SAME beta
         hist_spread = prices_df[stock1] - (beta * prices_df[stock2])
         mu, sigma = hist_spread.mean(), hist_spread.std()
         
@@ -57,6 +60,7 @@ def calculate_exit_z_score(stock1, stock2, beta):
 def log_liquidated_trades():
     """
     Log all open trades as liquidated (neutral outcome - not counted as win or loss)
+    NOW USES STORED HEDGE RATIO FROM TRACKER FOR CONSISTENCY!
     """
     try:
         if not os.path.exists(TRACKER_FILE):
@@ -68,29 +72,14 @@ def log_liquidated_trades():
         if len(open_pairs) == 0:
             return
         
-        # Load pairs data for hedge ratios
-        try:
-            pairs_df = pd.read_csv("data/cointegrated_pairs.csv")
-        except FileNotFoundError:
-            print("  Warning: cointegrated_pairs.csv not found, cannot calculate exit z-scores")
-            pairs_df = None
-        
         print("\n  Logging liquidated trades to history...")
         
         for _, row in open_pairs.iterrows():
             stock1, stock2 = row['stock1'], row['stock2']
             
-            # Get hedge ratio and calculate exit z-score
-            exit_z = None
-            if pairs_df is not None:
-                pair_info = pairs_df[
-                    ((pairs_df['stock1'] == stock1) & (pairs_df['stock2'] == stock2)) |
-                    ((pairs_df['stock1'] == stock2) & (pairs_df['stock2'] == stock1))
-                ]
-                
-                if len(pair_info) > 0:
-                    beta = pair_info.iloc[0]['hedge_ratio']
-                    exit_z = calculate_exit_z_score(stock1, stock2, beta)
+            # USE THE STORED HEDGE RATIO FROM TRACKER (exact same as entry!)
+            beta = row['hedge_ratio']
+            exit_z = calculate_exit_z_score(stock1, stock2, beta)
             
             # Update trade history
             if os.path.exists(HISTORY_FILE):

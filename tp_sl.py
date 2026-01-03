@@ -78,14 +78,48 @@ def log_trade_outcome(stock1, stock2, exit_z, exit_reason):
             
             # Display updated win rate
             completed = history[history['exit_date'].notna()]
-            if len(completed) >= 5:
-                win_rate = completed['win'].mean()
-                print(f"  [STATS] Overall win rate: {win_rate:.1%} ({completed['win'].sum()}/{len(completed)} wins)")
+            definitive = completed[completed['win'].notna()]
+            if len(definitive) >= 5:
+                win_rate = definitive['win'].mean()
+                print(f"  [STATS] Overall win rate: {win_rate:.1%} ({definitive['win'].sum():.0f}/{len(definitive)} wins)")
         else:
             print(f"  [!] Trade not found in history")
             
     except Exception as e:
         print(f"  [!] Warning: Could not log trade outcome - {e}")
+
+def calculate_exit_z_score(stock1, stock2, beta):
+    """
+    Calculate current z-score using THE EXACT SAME beta from entry.
+    This ensures consistency between entry and exit calculations.
+    """
+    try:
+        # Load historical data
+        prices_df = pd.read_csv("data/sp500_prices_clean.csv")
+        prices_df['date'] = pd.to_datetime(prices_df['date'])
+        prices_df = prices_df.set_index('date')
+        
+        # Get current prices
+        p1 = get_latest_price(stock1)
+        p2 = get_latest_price(stock2)
+        
+        if p1 is None or p2 is None:
+            return None
+        
+        # Calculate current spread using THE EXACT SAME beta from entry
+        current_spread = p1 - (beta * p2)
+        
+        # Get historical spread statistics using THE EXACT SAME beta
+        hist_spread = prices_df[stock1] - (beta * prices_df[stock2])
+        mu, sigma = hist_spread.mean(), hist_spread.std()
+        
+        # Calculate z-score
+        current_z = (current_spread - mu) / sigma
+        return current_z
+        
+    except Exception as e:
+        print(f"    Warning: Could not calculate z-score - {e}")
+        return None
 
 def manage_open_trades():
     # 1. Load tracked open pairs
@@ -105,8 +139,6 @@ def manage_open_trades():
         prices_df = pd.read_csv("data/sp500_prices_clean.csv")
         prices_df['date'] = pd.to_datetime(prices_df['date'])
         prices_df = prices_df.set_index('date')
-        
-        pairs_df = pd.read_csv("data/cointegrated_pairs.csv")
     except FileNotFoundError:
         print("Required data files not found. Skipping management.")
         return
@@ -118,28 +150,17 @@ def manage_open_trades():
     for _, row in open_pairs_df.iterrows():
         s1, s2 = row['stock1'], row['stock2']
         
-        # Get hedge ratio from cointegrated pairs
-        pair_info = pairs_df[
-            ((pairs_df['stock1'] == s1) & (pairs_df['stock2'] == s2)) |
-            ((pairs_df['stock1'] == s2) & (pairs_df['stock2'] == s1))
-        ]
-        
-        if len(pair_info) == 0:
-            print(f"[!] {s1}/{s2} - No cointegration data found, skipping")
-            continue
-        
-        beta = pair_info.iloc[0]['hedge_ratio']
+        # USE THE STORED HEDGE RATIO FROM TRACKER (exact same as entry!)
+        beta = row['hedge_ratio']
         
         # Calculate CURRENT spread and Z-score
         try:
-            p1 = get_latest_price(s1)
-            p2 = get_latest_price(s2)
-            current_spread = p1 - (beta * p2)
+            current_z = calculate_exit_z_score(s1, s2, beta)
             
-            # Use historical stats for consistency
-            hist_spread = prices_df[s1] - (beta * prices_df[s2])
-            mu, sigma = hist_spread.mean(), hist_spread.std()
-            current_z = (current_spread - mu) / sigma
+            if current_z is None:
+                print(f"\n{s1}/{s2}")
+                print(f"  [!] Could not get current prices, skipping")
+                continue
             
             print(f"\n{s1}/{s2}")
             print(f"  Entry Z: {row['z_score']:.2f}, Current Z: {current_z:.2f}")
