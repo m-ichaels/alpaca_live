@@ -21,8 +21,8 @@ def get_latest_price(symbol):
     quote = data_client.get_stock_latest_quote(request)
     return float(quote[symbol].ask_price)
 
-def close_pair_in_tracker(stock1, stock2):
-    """Mark a pair as closed in the tracker"""
+def remove_pair_from_tracker(stock1, stock2):
+    """REMOVE a pair from the tracker (not just mark as closed)"""
     try:
         if not os.path.exists(TRACKER_FILE):
             print(f"  [!] No tracker file found")
@@ -37,17 +37,17 @@ def close_pair_in_tracker(stock1, stock2):
         ) & (tracker['status'] == 'open')
         
         if mask.any():
-            tracker.loc[mask, 'status'] = 'closed'
-            tracker.loc[mask, 'exit_date'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            # REMOVE the row instead of marking as closed
+            tracker = tracker[~mask]
             tracker.to_csv(TRACKER_FILE, index=False)
-            print(f"  [OK] Pair closed in tracker")
+            print(f"  [OK] Pair removed from tracker")
             return True
         else:
             print(f"  [!] Pair not found in tracker")
             return False
             
     except Exception as e:
-        print(f"  [!] Warning: Could not close pair in tracker - {e}")
+        print(f"  [!] Warning: Could not remove pair from tracker - {e}")
         return False
 
 def log_trade_outcome(stock1, stock2, exit_z, exit_reason):
@@ -128,7 +128,14 @@ def manage_open_trades():
         return
     
     tracker = pd.read_csv(TRACKER_FILE)
-    open_pairs_df = tracker[tracker['status'] == 'open']
+    
+    # Check if hedge_ratio column exists
+    if 'hedge_ratio' not in tracker.columns:
+        print("ERROR: tracker missing hedge_ratio column!")
+        print("Please delete data/open_pairs.csv and recreate it by running the pipeline.")
+        return
+    
+    open_pairs_df = tracker[tracker['status'] == 'open'].copy()
     
     if len(open_pairs_df) == 0:
         print("No open pairs to manage.")
@@ -165,6 +172,7 @@ def manage_open_trades():
             print(f"\n{s1}/{s2}")
             print(f"  Entry Z: {row['z_score']:.2f}, Current Z: {current_z:.2f}")
             print(f"  Signal: {row['signal']}, Capital: ${row['capital_allocation']:,.2f}")
+            print(f"  Beta: {beta:.4f}")
             
             # 4. Exit Logic
             should_close = False
@@ -186,9 +194,9 @@ def manage_open_trades():
                 try:
                     trading_client.close_position(s1)
                     trading_client.close_position(s2)
-                    close_pair_in_tracker(s1, s2)
+                    remove_pair_from_tracker(s1, s2)  # REMOVE instead of mark closed
                     log_trade_outcome(s1, s2, current_z, close_reason)
-                    print(f"  [OK] Positions closed in Alpaca")
+                    print(f"  [OK] Positions closed in Alpaca and removed from tracker")
                 except Exception as e:
                     print(f"  [X] Error closing positions: {e}")
             else:

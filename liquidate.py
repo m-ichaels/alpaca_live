@@ -59,26 +59,40 @@ def calculate_exit_z_score(stock1, stock2, beta):
 
 def log_liquidated_trades():
     """
-    Log all open trades as liquidated (neutral outcome - not counted as win or loss)
-    NOW USES STORED HEDGE RATIO FROM TRACKER FOR CONSISTENCY!
+    Log all open trades as liquidated and REMOVE them from tracker.
+    Uses stored hedge ratio from tracker for consistency.
     """
     try:
         if not os.path.exists(TRACKER_FILE):
+            print("  No tracker file found")
             return
         
         tracker = pd.read_csv(TRACKER_FILE)
-        open_pairs = tracker[tracker['status'] == 'open']
         
-        if len(open_pairs) == 0:
+        # Check if hedge_ratio column exists
+        if 'hedge_ratio' not in tracker.columns:
+            print("  ERROR: tracker missing hedge_ratio column!")
+            print("  Please delete data/open_pairs.csv and recreate it by running the pipeline.")
             return
         
-        print("\n  Logging liquidated trades to history...")
+        open_pairs = tracker[tracker['status'] == 'open'].copy()
         
-        for _, row in open_pairs.iterrows():
+        if len(open_pairs) == 0:
+            print("  No open pairs to log")
+            return
+        
+        print(f"\n  Logging {len(open_pairs)} liquidated trades to history...")
+        
+        pairs_to_remove = []
+        
+        for idx, row in open_pairs.iterrows():
             stock1, stock2 = row['stock1'], row['stock2']
             
             # USE THE STORED HEDGE RATIO FROM TRACKER (exact same as entry!)
             beta = row['hedge_ratio']
+            
+            print(f"    Processing {stock1}/{stock2} (beta={beta:.4f})...")
+            
             exit_z = calculate_exit_z_score(stock1, stock2, beta)
             
             # Update trade history
@@ -98,27 +112,24 @@ def log_liquidated_trades():
                     history.loc[mask, 'win'] = None  # Neutral - not counted in win rate
                     
                     history.to_csv(HISTORY_FILE, index=False)
-                    z_str = f"z={exit_z:.2f}" if exit_z is not None else "z=unknown"
-                    print(f"    ✓ Logged {stock1}/{stock2} ({z_str})")
+                    z_str = f"entry_z={row['z_score']:.2f}, exit_z={exit_z:.2f}" if exit_z is not None else "z=unknown"
+                    print(f"      ✓ Logged to history ({z_str})")
+                else:
+                    print(f"      ! Trade not found in history")
             
-            # Mark as closed in tracker
-            tracker.loc[
-                ((tracker['stock1'] == stock1) & (tracker['stock2'] == stock2)) |
-                ((tracker['stock1'] == stock2) & (tracker['stock2'] == stock1)),
-                'status'
-            ] = 'closed'
-            tracker.loc[
-                ((tracker['stock1'] == stock1) & (tracker['stock2'] == stock2)) |
-                ((tracker['stock1'] == stock2) & (tracker['stock2'] == stock1)),
-                'exit_date'
-            ] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            # Mark this pair for removal
+            pairs_to_remove.append(idx)
         
-        # Save updated tracker
+        # REMOVE closed pairs from tracker (don't just mark as closed)
+        tracker = tracker.drop(pairs_to_remove)
         tracker.to_csv(TRACKER_FILE, index=False)
-        print(f"  ✓ Marked {len(open_pairs)} pairs as closed in tracker")
+        print(f"\n  ✓ Removed {len(pairs_to_remove)} pairs from tracker")
+        print(f"  ✓ Remaining open pairs: {len(tracker[tracker['status'] == 'open'])}")
         
     except Exception as e:
-        print(f"  Warning: Could not log liquidated trades - {e}")
+        print(f"  ERROR logging liquidated trades: {e}")
+        import traceback
+        traceback.print_exc()
 
 # Main liquidation logic
 print("=" * 80)
@@ -160,10 +171,11 @@ try:
 except Exception as e:
     print(f"✗ Error liquidating positions: {e}")
 
-# Log all liquidated trades BEFORE clearing tracker
+# Log all liquidated trades and REMOVE from tracker
 print("\nUpdating trade records...")
 log_liquidated_trades()
 
 print("\n" + "=" * 80)
 print("Liquidation complete. Manual exits logged as neutral (not counted in win rate).")
+print("All closed pairs removed from tracker.")
 print("=" * 80)
