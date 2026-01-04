@@ -63,12 +63,13 @@ for _, r in df.iterrows():
     trades_per_year = TRADING_DAYS_PER_YEAR / r['half_life']
     annualized_return = per_trade_return * trades_per_year
     
-    # Annualized volatility (estimate from z-score movements)
-    z_series = (s - s.rolling(60).mean()) / s.rolling(60).std()
-    z_returns = z_series.diff().dropna()
-    annualized_vol = z_returns.std() * np.sqrt(TRADING_DAYS_PER_YEAR) * s.std()
+    # Annualized volatility
+    # Estimate from historical spread returns scaled by number of trades per year
+    spread_returns = s.pct_change().dropna()
+    trade_vol = spread_returns.std() * np.sqrt(trades_per_year)
+    annualized_vol = trade_vol if trade_vol > 0 else 0.01
     
-    if annualized_return <= 0 or annualized_vol <= 0:
+    if annualized_return <= 0 or annualized_vol <= 0 or annualized_vol > 5.0:
         continue
     
     pair_name = f"{r['stock1']}/{r['stock2']}"
@@ -96,6 +97,11 @@ if not pair_metrics:
 
 metrics_df = pd.DataFrame(pair_metrics)
 print(f"Analyzing {len(metrics_df)} valid pairs")
+
+print(f"\nPair metrics summary:")
+print(f"  Avg annualized return: {metrics_df['annualized_return'].mean():.2%}")
+print(f"  Avg annualized vol: {metrics_df['annualized_vol'].mean():.2%}")
+print(f"  Avg Sharpe: {(metrics_df['annualized_return'] / metrics_df['annualized_vol']).mean():.2f}")
 
 # 3. Build Covariance Matrix from Correlation Matrix
 pair_names = metrics_df['pair'].tolist()
@@ -131,11 +137,13 @@ def negative_kelly_objective(w):
 # Constraints: sum(w) <= 1
 constraints = [{'type': 'ineq', 'fun': lambda w: 1.0 - np.sum(w)}]
 
-# Bounds: 0 <= w_i <= 0.15
-bounds = [(0, 0.15) for _ in range(n_pairs)]
+# Bounds: 0 <= w_i <= 0.20 (allow up to 20% per pair)
+bounds = [(0, 0.20) for _ in range(n_pairs)]
 
-# Initial guess
-w0 = np.ones(n_pairs) / n_pairs * 0.5
+# Initial guess - proportional to Sharpe ratio
+sharpe_ratios = mu / vols
+w0 = sharpe_ratios / sharpe_ratios.sum() * 0.5
+w0 = np.clip(w0, 0, 0.20)
 
 # Optimize
 result = minimize(
@@ -149,22 +157,22 @@ result = minimize(
 
 if not result.success:
     print(f"Optimization failed: {result.message}")
-    # Fallback to individual Kelly
-    individual_kelly = np.zeros(n_pairs)
-    for i in range(n_pairs):
-        wl = metrics_df.iloc[i]['win_loss_ratio']
-        raw_k = (wp * wl - (1 - wp)) / wl if wl > 0 else 0
-        individual_kelly[i] = min(max(0, raw_k * 0.33), 0.10)
-    optimal_weights = individual_kelly / individual_kelly.sum() * 0.95
+    # Fallback to Sharpe-weighted allocation
+    sharpe_ratios = mu / vols
+    sharpe_weights = sharpe_ratios / sharpe_ratios.sum()
+    optimal_weights = np.clip(sharpe_weights * 0.95, 0, 0.20)
+    print("Using Sharpe-weighted fallback")
 else:
     optimal_weights = result.x
+    print("Optimization succeeded")
 
 # Apply fractional Kelly (1/3 for safety)
 optimal_weights *= 0.33
 
 print(f"\nPortfolio Kelly weights:")
 print(f"  Total: {optimal_weights.sum():.2%}")
-print(f"  Max: {optimal_weights.max():.2%}, Min: {optimal_weights.min():.2%}")
+print(f"  Max: {optimal_weights.max():.2%}, Min: {optimal_weights[optimal_weights > 0].min():.2%}")
+print(f"  Non-zero allocations: {(optimal_weights > 0.001).sum()}/{n_pairs}")
 
 # Portfolio metrics
 port_return = optimal_weights @ mu
