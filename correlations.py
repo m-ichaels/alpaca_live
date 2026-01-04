@@ -115,9 +115,6 @@ if len(high_corr_pairs) > 0:
     
     for idx, row in high_corr_df.iterrows():
         print(f"  {row['pair1']} <-> {row['pair2']}: {row['correlation']:+.3f}")
-    
-    high_corr_df.to_csv("data/high_correlations.csv", index=False)
-    print(f"\nHigh correlations saved to data/high_correlations.csv")
 else:
     print("  No pairs with |correlation| > 0.5")
 
@@ -159,7 +156,7 @@ try:
                 corr = trading_corr.iloc[i, j]
                 if abs(corr) > 0.5:
                     found_cluster = True
-                    print(f"  âš  {trading_pairs_in_corr[i]} <-> {trading_pairs_in_corr[j]}: {corr:+.3f}")
+                    print(f"  ⚠  {trading_pairs_in_corr[i]} <-> {trading_pairs_in_corr[j]}: {corr:+.3f}")
         
         if not found_cluster:
             print("  No highly correlated pairs (good diversification)")
@@ -224,10 +221,6 @@ try:
                 print(f"    Suggested: {row['adjusted_fraction']:.2%} (${row['suggested_capital']:,.0f})")
                 print(f"    Reduction: {(1 - row['adjustment_factor']) * 100:.1f}%")
         
-        # Save adjustments
-        adj_df.to_csv("data/correlation_adjustments.csv", index=False)
-        print(f"\nAdjustments saved to data/correlation_adjustments.csv")
-        
         # Calculate new total allocation
         total_current = adj_df['current_capital'].sum()
         total_suggested = adj_df['suggested_capital'].sum()
@@ -272,5 +265,4 @@ print("ANALYSIS COMPLETE")
 print("=" * 80)
 print("\nGenerated files:")
 print("  - data/zscore_correlations.csv (full matrix)")
-print("  - data/high_correlations.csv (|ρ| > 0.5)")
-print("  - data/correlation_adjustments.csv (sizing recommendations)")
+print("  - data/correlation_heatmap.png")
