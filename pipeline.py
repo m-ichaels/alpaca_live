@@ -12,44 +12,44 @@ def run_script(script_name, description):
     print(f"[{datetime.now().strftime('%H:%M:%S')}] {description}")
     print(f"Running: {script_name}")
     print('='*70)
+    sys.stdout.flush()
     
     try:
-        # Use Popen instead of run to stream output in real-time
-        # -u flag forces unbuffered output from Python subprocesses
+        # Set environment to force unbuffered output
+        env = os.environ.copy()
+        env['PYTHONUNBUFFERED'] = '1'
+        
         process = subprocess.Popen(
             [sys.executable, '-u', script_name],
             stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+            stderr=subprocess.STDOUT,  # Merge stderr into stdout
             text=True,
-            bufsize=1,  # Line buffered
-            universal_newlines=True
+            bufsize=1,
+            universal_newlines=True,
+            env=env  # Pass the modified environment
         )
         
-        # Stream stdout in real-time
-        while True:
-            output = process.stdout.readline()
-            if output == '' and process.poll() is not None:
-                break
-            if output:
-                print(output.rstrip())
+        # Stream output in real-time
+        for line in iter(process.stdout.readline, ''):
+            if line:
+                print(line.rstrip())
+                sys.stdout.flush()  # Force flush after each line
         
-        # Capture any remaining stderr
-        stderr = process.stderr.read()
-        if stderr:
-            print("STDERR:", stderr)
-        
-        # Get return code
-        return_code = process.poll()
+        process.wait()
+        return_code = process.returncode
         
         if return_code == 0:
             print(f"[OK] {script_name} completed successfully")
+            sys.stdout.flush()
             return True
         else:
             print(f"[X] {script_name} failed with exit code {return_code}")
+            sys.stdout.flush()
             return False
             
     except Exception as e:
         print(f"[X] Unexpected error: {e}")
+        sys.stdout.flush()
         return False
 
 def main():
