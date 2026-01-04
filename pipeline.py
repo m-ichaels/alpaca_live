@@ -3,6 +3,9 @@ import sys
 import os
 from datetime import datetime
 
+sys.stdout.reconfigure(line_buffering=True)
+sys.stderr.reconfigure(line_buffering=True)
+
 def run_script(script_name, description):
     """Run a Python script and stream output in real-time."""
     print(f"\n{'='*70}")
