@@ -2,6 +2,8 @@ import pandas as pd
 import numpy as np
 import warnings
 warnings.filterwarnings('ignore')
+from tp_sl import TAKE_PROFIT_Z, STOP_LOSS_Z
+from get_entry_criteria import ENTRY_Z_MIN, ENTRY_Z_MAX
 
 # Load data
 P = pd.read_csv("data/sp500_prices_clean.csv", index_col='date', parse_dates=True)
@@ -11,27 +13,133 @@ if S.empty:
     print("No entry signals found")
     exit()
 
-# Calculate z-scores for all pairs
-Z = {}
-for _, r in S.iterrows():
-    if r['stock1'] in P.columns and r['stock2'] in P.columns:
-        spread = P[r['stock1']] - r['hedge_ratio'] * P[r['stock2']]
-        z = (spread - spread.rolling(60).mean()) / spread.rolling(60).std()
-        pair_name = f"{r['stock1']}/{r['stock2']}"
-        Z[pair_name] = z.dropna()
+print(f"Entry range: {ENTRY_Z_MIN} <= |z-score| < {ENTRY_Z_MAX}")
+print(f"Take profit: ±{TAKE_PROFIT_Z}")
+print(f"Stop loss: ±{STOP_LOSS_Z}")
 
-if len(Z) < 1:
-    print("No valid pairs for correlation analysis")
-    # Create empty correlation matrix
+# Calculate in-trade returns for all pairs aligned to calendar dates
+trade_returns = {}
+
+for _, r in S.iterrows():
+    if r['stock1'] not in P.columns or r['stock2'] not in P.columns:
+        continue
+    
+    # Calculate spread and z-score
+    spread = P[r['stock1']] - r['hedge_ratio'] * P[r['stock2']]
+    mu = spread.mean()
+    sigma = spread.std()
+    z_score = (spread - mu) / sigma
+    
+    # Create a series to track when we're in a trade
+    in_trade_mask = pd.Series(False, index=z_score.index)
+    
+    in_trade = False
+    trade_direction = None
+    entry_date = None
+    
+    for date, z in z_score.items():
+        if not in_trade:
+            # Check for entry signal
+            if z < -ENTRY_Z_MIN and z >= -ENTRY_Z_MAX:  # Long spread
+                in_trade = True
+                trade_direction = 'long'
+                entry_date = date
+                in_trade_mask.loc[date] = True
+            elif z > ENTRY_Z_MIN and z <= ENTRY_Z_MAX:  # Short spread
+                in_trade = True
+                trade_direction = 'short'
+                entry_date = date
+                in_trade_mask.loc[date] = True
+        else:
+            # Check for exit signal
+            exit_trade = False
+            
+            if trade_direction == 'long':
+                if z > -TAKE_PROFIT_Z or z < -STOP_LOSS_Z:
+                    exit_trade = True
+            else:  # short
+                if z < TAKE_PROFIT_Z or z > STOP_LOSS_Z:
+                    exit_trade = True
+            
+            if exit_trade:
+                in_trade = False
+                trade_direction = None
+                entry_date = None
+            else:
+                in_trade_mask.loc[date] = True
+    
+    # Calculate spread returns
+    spread_returns = spread.pct_change()
+    
+    # Extract returns only during trade periods, keep dates aligned
+    pair_returns = pd.Series(0.0, index=spread_returns.index)
+    pair_returns[in_trade_mask] = spread_returns[in_trade_mask]
+    
+    # Handle short trades (flip sign)
+    # We need to track direction per date
+    in_trade = False
+    trade_direction = None
+    
+    for date, z in z_score.items():
+        if not in_trade:
+            if z < -ENTRY_Z_MIN and z >= -ENTRY_Z_MAX:
+                in_trade = True
+                trade_direction = 'long'
+            elif z > ENTRY_Z_MIN and z <= ENTRY_Z_MAX:
+                in_trade = True
+                trade_direction = 'short'
+        else:
+            exit_trade = False
+            
+            if trade_direction == 'long':
+                if z > -TAKE_PROFIT_Z or z < -STOP_LOSS_Z:
+                    exit_trade = True
+            else:
+                if z < TAKE_PROFIT_Z or z > STOP_LOSS_Z:
+                    exit_trade = True
+                else:
+                    # Flip sign for short positions
+                    if date in pair_returns.index and in_trade_mask.loc[date]:
+                        pair_returns.loc[date] = -pair_returns.loc[date]
+            
+            if exit_trade:
+                in_trade = False
+                trade_direction = None
+    
+    pair_name = f"{r['stock1']}/{r['stock2']}"
+    num_trade_days = in_trade_mask.sum()
+    
+    if num_trade_days > 0:
+        trade_returns[pair_name] = pair_returns.dropna()
+        print(f"{pair_name}: {num_trade_days} days in trade")
+
+if len(trade_returns) < 1:
+    print("No valid pairs with trade periods for correlation analysis")
     pd.DataFrame().to_csv("data/pair_correlation_matrix.csv")
     exit()
 
-# Build z-score dataframe and correlation matrix
-df = pd.DataFrame(Z).dropna()
-corr = df.corr()
+# Build dataframe with all dates - pairs naturally have zeros when not trading
+all_dates = P.index
+df_returns = pd.DataFrame(index=all_dates)
+
+for pair_name, returns in trade_returns.items():
+    df_returns[pair_name] = returns.reindex(all_dates, fill_value=0.0)
+
+# Calculate correlation on the full time series
+corr = df_returns.corr()
 
 # Save correlation matrix
 corr.to_csv("data/pair_correlation_matrix.csv")
 
-print(f"Correlation matrix saved: {len(corr)} pairs, {len(df)} overlapping days")
-print(f"Mean correlation: {corr.values[np.triu_indices_from(corr.values, k=1)].mean():.3f}")
+# Calculate statistics
+upper_tri = corr.values[np.triu_indices_from(corr.values, k=1)]
+
+print(f"\n{'='*60}")
+print(f"Correlation matrix saved: {len(corr)} pairs")
+print(f"Based on {len(all_dates)} total trading days")
+print(f"\nCorrelation statistics:")
+print(f"  Mean correlation: {upper_tri.mean():.3f}")
+print(f"  Median correlation: {np.median(upper_tri):.3f}")
+print(f"  Max correlation: {upper_tri.max():.3f}")
+print(f"  Min correlation: {upper_tri.min():.3f}")
+print(f"{'='*60}")
