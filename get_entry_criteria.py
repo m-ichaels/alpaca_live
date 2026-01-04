@@ -46,7 +46,7 @@ for idx, row in pairs_df.iterrows():
         'hedge_ratio': beta,
         'z_score': z_score,
         'half_life': half_life,
-        'signal': 'BUY' if z_score < -2 else ('SELL' if z_score > 2 else 'NEUTRAL')
+        'signal': 'BUY' if z_score < -2.5 else ('SELL' if z_score > 2.5 else 'NEUTRAL')
     })
 
 results_df = pd.DataFrame(results)

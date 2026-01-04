@@ -2,7 +2,6 @@ import pandas as pd
 import numpy as np
 import os
 import importlib.util
-from scipy.optimize import linprog
 from alpaca.trading.client import TradingClient
 from alpaca.data.historical import StockHistoricalDataClient
 from alpaca.data.requests import StockLatestQuoteRequest
@@ -93,7 +92,7 @@ def calculate_kelly_parameters(z_score, spread_mean, spread_std):
     kelly_fraction = (win_prob * win_loss_ratio - loss_prob) / win_loss_ratio
     
     # Conservative 1/3 Kelly
-    kelly_fraction = max(0, kelly_fraction) * 0.33
+    kelly_fraction = max(0, kelly_fraction) * 0.25
     
     # Cap at 8% per pair
     kelly_fraction = min(kelly_fraction, 0.08)
@@ -388,141 +387,31 @@ print(f"\nTotal snapped allocation: ${total_snapped:,.2f} ({total_snapped_pct:.1
 print(f"Target was: ${target_capital:,.2f} ({target_fraction:.1%})")
 
 # ============================================================================
-# PASS 5: Optimize for diversification using Linear Programming
+# PASS 5: Adjust if over-allocated (greedy optimization)
 # ============================================================================
 if total_snapped > target_capital:
     print("\n" + "=" * 80)
-    print("PASS 5: Over-allocated - optimizing for maximum diversification...")
+    print("PASS 5: Over-allocated - adjusting down...")
     print("=" * 80)
     print(f"Need to reduce by: ${total_snapped - target_capital:,.2f}\n")
     
-    # ========================================================================
-    # Mixed Integer Programming (MIP) for optimal selection
-    # 
-    # For each pair, choose ONE allocation from its feasible set (or skip it)
-    # Objective: Maximize number of pairs included + minimize Kelly deviation
-    # Constraint: Total capital <= target_capital
-    # ========================================================================
+    # Greedy approach: iteratively reduce pairs with smallest Kelly
+    # OR find lower feasible allocations for over-allocated pairs
     
-    # Build decision variables: one binary var per (pair, allocation) combination
-    variables = []
-    pair_indices = []
+    final_allocations = []
+    remaining_budget = target_capital
     
-    for pair_idx, row in snapped_df.iterrows():
-        for alloc_idx, alloc in enumerate(row['feasible_allocations']):
-            variables.append({
-                'pair_idx': pair_idx,
-                'pair_name': f"{row['stock1']}/{row['stock2']}",
-                'alloc_idx': alloc_idx,
-                'capital': alloc['capital'],
-                'kelly': row['raw_kelly_fraction'],
-                'target': row['target_capital'],
-                'allocation': alloc
-            })
-        pair_indices.append(pair_idx)
+    # Sort by Kelly (highest first) - prioritize best opportunities
+    sorted_pairs = snapped_df.sort_values('raw_kelly_fraction', ascending=False)
     
-    n_vars = len(variables)
-    print(f"Decision variables: {n_vars}")
-    print(f"Pairs: {len(pair_indices)}\n")
-    
-    # Objective: maximize diversification (number of pairs) while minimizing deviation from Kelly
-    # Negative coefficients because linprog minimizes (we want to maximize pairs)
-    # Give each allocation from same pair equal weight so we maximize PAIRS not allocations
-    c = np.zeros(n_vars)
-    for i, var in enumerate(variables):
-        n_allocations_for_pair = len(snapped_df.loc[var['pair_idx']]['feasible_allocations'])
-        c[i] = -1.0 / n_allocations_for_pair  # Equal weight per pair
-    
-    # Constraint 1: Total capital <= target
-    A_capital = np.array([[var['capital'] for var in variables]])
-    b_capital = np.array([target_capital])
-    
-    # Constraint 2: At most one allocation per pair
-    A_pairs = []
-    b_pairs = []
-    
-    for pair_idx in pair_indices:
-        row = np.zeros(n_vars)
-        for i, var in enumerate(variables):
-            if var['pair_idx'] == pair_idx:
-                row[i] = 1
-        A_pairs.append(row)
-        b_pairs.append(1)  # At most 1 allocation per pair
-    
-    A_ub = np.vstack([A_capital, np.array(A_pairs)])
-    b_ub = np.concatenate([b_capital, np.array(b_pairs)])
-    
-    # Bounds: binary variables (0 or 1) - LP relaxation
-    bounds = [(0, 1) for _ in range(n_vars)]
-    
-    # Solve LP relaxation
-    print("Solving linear programming relaxation...")
-    result = linprog(c, A_ub=A_ub, b_ub=b_ub, bounds=bounds, method='highs')
-    
-    if not result.success:
-        print(f"❌ Optimization failed: {result.message}")
-        print("Falling back to snapped allocations with smallest Kelly removed...\n")
+    for idx, row in sorted_pairs.iterrows():
+        feasible = row['feasible_allocations']
         
-        # Emergency fallback: remove smallest Kelly pairs until we fit
-        final_allocations = []
-        sorted_pairs = snapped_df.sort_values('raw_kelly_fraction', ascending=False)
-        remaining_budget = target_capital
+        # Find largest feasible allocation that fits in remaining budget
+        valid = [f for f in feasible if f['capital'] <= remaining_budget]
         
-        for idx, row in sorted_pairs.iterrows():
-            if row['snapped_capital'] <= remaining_budget:
-                final_allocations.append({
-                    'stock1': row['stock1'],
-                    'stock2': row['stock2'],
-                    'signal': row['signal'],
-                    'z_score': row['z_score'],
-                    'hedge_ratio': row['hedge_ratio'],
-                    'win_prob': row['win_prob'],
-                    'win_loss_ratio': row['win_loss_ratio'],
-                    'raw_kelly_fraction': row['raw_kelly_fraction'],
-                    'target_capital': row['target_capital'],
-                    'shares1': row['snapped_shares1'],
-                    'shares2': row['snapped_shares2'],
-                    'capital_allocation': row['snapped_capital'],
-                    'kelly_fraction': row['snapped_fraction'],
-                    'price1': row['price1'],
-                    'price2': row['price2'],
-                    'hedge_error': row['snapped_hedge_error']
-                })
-                remaining_budget -= row['snapped_capital']
-                print(f"[INCLUDED] {row['stock1']}/{row['stock2']}: ${row['snapped_capital']:,.2f}")
-            else:
-                print(f"[SKIPPED] {row['stock1']}/{row['stock2']}: ${row['snapped_capital']:,.2f} exceeds budget")
-        
-        final_df = pd.DataFrame(final_allocations)
-    else:
-        print("✓ Optimization successful\n")
-        
-        # Round LP solution to binary (greedy rounding based on LP weights)
-        selected = []
-        used_pairs = set()
-        remaining_budget = target_capital
-        
-        # Sort by LP solution value (higher = more likely to be selected)
-        candidates = [(i, result.x[i], variables[i]) for i in range(n_vars)]
-        candidates.sort(key=lambda x: x[1], reverse=True)
-        
-        print("Greedy rounding to integer solution...\n")
-        
-        for i, weight, var in candidates:
-            if var['pair_idx'] in used_pairs:
-                continue
-            
-            if var['capital'] <= remaining_budget:
-                selected.append(var)
-                used_pairs.add(var['pair_idx'])
-                remaining_budget -= var['capital']
-        
-        print(f"Selected {len(selected)}/{len(snapped_df)} pairs\n")
-        
-        final_allocations = []
-        for var in selected:
-            row = snapped_df.loc[var['pair_idx']]
-            alloc = var['allocation']
+        if len(valid) > 0:
+            best = max(valid, key=lambda x: x['capital'])
             
             final_allocations.append({
                 'stock1': row['stock1'],
@@ -534,62 +423,22 @@ if total_snapped > target_capital:
                 'win_loss_ratio': row['win_loss_ratio'],
                 'raw_kelly_fraction': row['raw_kelly_fraction'],
                 'target_capital': row['target_capital'],
-                'shares1': alloc['shares1'],
-                'shares2': alloc['shares2'],
-                'capital_allocation': alloc['capital'],
-                'kelly_fraction': alloc['pct'],
+                'shares1': best['shares1'],
+                'shares2': best['shares2'],
+                'capital_allocation': best['capital'],
+                'kelly_fraction': best['pct'],
                 'price1': row['price1'],
                 'price2': row['price2'],
-                'hedge_error': alloc['hedge_error']
+                'hedge_error': best['hedge_error']
             })
             
-            deviation = (alloc['capital'] - row['target_capital']) / row['target_capital'] * 100
-            print(f"[SELECTED] {row['stock1']}/{row['stock2']}: "
-                  f"Target ${row['target_capital']:,.2f} → ${alloc['capital']:,.2f} ({deviation:+.1f}%)")
-        
-        # Check if we have remaining budget to add more pairs
-        total_allocated = sum(p['capital_allocation'] for p in final_allocations)
-        remaining = target_capital - total_allocated
-        
-        if remaining > total_equity * 0.02:  # More than 2% remaining
-            print(f"\n💡 Remaining budget: ${remaining:,.2f} - attempting to include more pairs...\n")
+            remaining_budget -= best['capital']
             
-            # Try to add pairs that weren't selected
-            unselected_pairs = [idx for idx in pair_indices if idx not in used_pairs]
-            
-            for pair_idx in unselected_pairs:
-                row = snapped_df.loc[pair_idx]
-                feasible = row['feasible_allocations']
-                
-                # Find largest allocation that fits
-                valid = [f for f in feasible if f['capital'] <= remaining]
-                
-                if len(valid) > 0:
-                    best = max(valid, key=lambda x: x['capital'])
-                    
-                    final_allocations.append({
-                        'stock1': row['stock1'],
-                        'stock2': row['stock2'],
-                        'signal': row['signal'],
-                        'z_score': row['z_score'],
-                        'hedge_ratio': row['hedge_ratio'],
-                        'win_prob': row['win_prob'],
-                        'win_loss_ratio': row['win_loss_ratio'],
-                        'raw_kelly_fraction': row['raw_kelly_fraction'],
-                        'target_capital': row['target_capital'],
-                        'shares1': best['shares1'],
-                        'shares2': best['shares2'],
-                        'capital_allocation': best['capital'],
-                        'kelly_fraction': best['pct'],
-                        'price1': row['price1'],
-                        'price2': row['price2'],
-                        'hedge_error': best['hedge_error']
-                    })
-                    
-                    remaining -= best['capital']
-                    print(f"[ADDED] {row['stock1']}/{row['stock2']}: ${best['capital']:,.2f}")
-        
-        final_df = pd.DataFrame(final_allocations)
+            print(f"[ALLOCATED] {row['stock1']}/{row['stock2']}: ${best['capital']:,.2f}")
+        else:
+            print(f"[SKIPPED] {row['stock1']}/{row['stock2']}: No allocation fits in remaining ${remaining_budget:,.2f}")
+    
+    final_df = pd.DataFrame(final_allocations)
     
 else:
     # Under-allocated or perfectly allocated - use snapped allocations
