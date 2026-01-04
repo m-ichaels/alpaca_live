@@ -66,8 +66,9 @@ def main():
         ("cleaning.py", "Step 3: Cleaning and preprocessing data"),
         ("pair_getting.py", "Step 4: Finding cointegrated pairs"),
         ("get_entry_criteria.py", "Step 5: Calculating entry signals and OU parameters"),
-        ("sizing.py", "Step 6: Kelly criterion position sizing"),
-        ("execute.py", "Step 7: Executing trades based on sized signals")
+        ("correlations.py", "Step 6: Calculating pair correlations during trade periods"),
+        ("sizing.py", "Step 7: Kelly criterion position sizing"),
+        ("execute.py", "Step 8: Executing trades based on sized signals")
     ]
     
     results = {}
