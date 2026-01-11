@@ -1,2 +1,8 @@
-KEY = "PKB7OJ2TDFC5UYBVHKZ3DB3HJL"
-SECRET = "BV4Vb2t5hmqkU8F9pexTfixAWC9qh15y9bdFUNBEqXtt"
+# auth.py
+import os
+
+KEY = os.environ.get('ALPACA_API_KEY')
+SECRET = os.environ.get('ALPACA_SECRET_KEY')
+
+if not KEY or not SECRET:
+    raise ValueError("API credentials not found in environment variables")

@@ -1,0 +1,33 @@
+name: NYSE Trading Pipeline
+
+on:
+  schedule:
+    # 17:00 UTC is 12:00 PM ET.
+    # This ensures we are awake for both 1pm early closes and 4pm normal closes.
+    - cron: "0 17 * * 1-5"
+  workflow_dispatch: # Allows manual trigger from the Actions tab
+
+jobs:
+  run-pipeline:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: "3.10"
+          cache: "pip" # Speeds up future runs
+
+      - name: Install Dependencies
+        run: |
+          pip install pandas pandas_market_calendars pytz alpaca-trade-api
+          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+
+      - name: Run Pipeline
+        env:
+          # Map your GitHub Secrets to Environment Variables
+          ALPACA_API_KEY: ${{ secrets.ALPACA_API_KEY }}
+          ALPACA_SECRET_KEY: ${{ secrets.ALPACA_SECRET_KEY }}
+        run: python pipeline.py

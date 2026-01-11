@@ -1,19 +1,15 @@
-# Data Manipulation and Analysis
-pandas
-numpy
-scipy
+# Data Manipulation & Analysis
+pandas>=2.2.3
+numpy>=1.26.4,<2.0.0
 
-# Financial Data and Trading API
-alpaca-py
+# Alpaca Trading API SDK
+alpaca-py>=0.30.0
 
-# Statistical Modeling
-statsmodels
+# Scientific & Statistical Computing
+scipy>=1.13.0
+statsmodels>=0.14.2
 
-# Web Scraping (for S&P 500 list)
-requests
-lxml
-beautifulsoup4
-
-# Dashboard and Visualization
-dash
-plotly
+# Web Scraping & HTML Parsing
+requests>=2.32.0
+lxml>=5.2.0
+html5lib>=1.1
