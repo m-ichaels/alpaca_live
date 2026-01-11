@@ -3,23 +3,24 @@ import numpy as np
 import warnings
 warnings.filterwarnings('ignore')
 from tp_sl import TAKE_PROFIT_Z, STOP_LOSS_Z
+from get_entry_criteria import ENTRY_Z_MIN, ENTRY_Z_MAX
 
 # Load data
 P = pd.read_csv("data/sp500_prices_clean.csv", index_col='date', parse_dates=True)
-E = pd.read_csv("data/pair_edges.csv")
+S = pd.read_csv("data/entry_signals.csv")
 
-if E.empty:
-    print("No pairs found in edge analysis")
+if S.empty:
+    print("No entry signals found")
     exit()
 
-print(f"Analyzing correlations for {len(E)} pairs from edge analysis")
-print(f"Take profit: ±{TAKE_PROFIT_Z}")
-print(f"Stop loss: ±{STOP_LOSS_Z}")
+print(f"Entry range: {ENTRY_Z_MIN} <= |z-score| < {ENTRY_Z_MAX}")
+print(f"Take profit: Â±{TAKE_PROFIT_Z}")
+print(f"Stop loss: Â±{STOP_LOSS_Z}")
 
 # Calculate in-trade returns for all pairs aligned to calendar dates
 trade_returns = {}
 
-for _, r in E.iterrows():
+for _, r in S.iterrows():
     if r['stock1'] not in P.columns or r['stock2'] not in P.columns:
         continue
     
@@ -28,18 +29,6 @@ for _, r in E.iterrows():
     mu = spread.mean()
     sigma = spread.std()
     z_score = (spread - mu) / sigma
-    
-    # Get the current z-score and signal from edge analysis
-    current_z = r['z_score']
-    signal = r['signal']
-    
-    # Determine initial trade direction based on signal
-    if signal == 'LONG_SPREAD':
-        initial_direction = 'long'
-    elif signal == 'SHORT_SPREAD':
-        initial_direction = 'short'
-    else:
-        continue
     
     # Create a series to track when we're in a trade
     in_trade_mask = pd.Series(False, index=z_score.index)
@@ -50,32 +39,25 @@ for _, r in E.iterrows():
     
     for date, z in z_score.items():
         if not in_trade:
-            # Check for entry signal matching the edge analysis
-            # Entry occurs when z-score is between TAKE_PROFIT_Z and STOP_LOSS_Z
-            abs_z = abs(z)
-            
-            if abs_z >= TAKE_PROFIT_Z and abs_z <= STOP_LOSS_Z:
-                # Determine direction based on sign
-                if z < 0 and initial_direction == 'long':
-                    in_trade = True
-                    trade_direction = 'long'
-                    entry_date = date
-                    in_trade_mask.loc[date] = True
-                elif z > 0 and initial_direction == 'short':
-                    in_trade = True
-                    trade_direction = 'short'
-                    entry_date = date
-                    in_trade_mask.loc[date] = True
+            # Check for entry signal
+            if z < -ENTRY_Z_MIN and z >= -ENTRY_Z_MAX:  # Long spread
+                in_trade = True
+                trade_direction = 'long'
+                entry_date = date
+                in_trade_mask.loc[date] = True
+            elif z > ENTRY_Z_MIN and z <= ENTRY_Z_MAX:  # Short spread
+                in_trade = True
+                trade_direction = 'short'
+                entry_date = date
+                in_trade_mask.loc[date] = True
         else:
             # Check for exit signal
             exit_trade = False
             
             if trade_direction == 'long':
-                # Long spread: exit if z-score crosses above -TAKE_PROFIT_Z or below -STOP_LOSS_Z
                 if z > -TAKE_PROFIT_Z or z < -STOP_LOSS_Z:
                     exit_trade = True
             else:  # short
-                # Short spread: exit if z-score crosses below TAKE_PROFIT_Z or above STOP_LOSS_Z
                 if z < TAKE_PROFIT_Z or z > STOP_LOSS_Z:
                     exit_trade = True
             
@@ -100,14 +82,12 @@ for _, r in E.iterrows():
     
     for date, z in z_score.items():
         if not in_trade:
-            abs_z = abs(z)
-            if abs_z >= TAKE_PROFIT_Z and abs_z <= STOP_LOSS_Z:
-                if z < 0 and initial_direction == 'long':
-                    in_trade = True
-                    trade_direction = 'long'
-                elif z > 0 and initial_direction == 'short':
-                    in_trade = True
-                    trade_direction = 'short'
+            if z < -ENTRY_Z_MIN and z >= -ENTRY_Z_MAX:
+                in_trade = True
+                trade_direction = 'long'
+            elif z > ENTRY_Z_MIN and z <= ENTRY_Z_MAX:
+                in_trade = True
+                trade_direction = 'short'
         else:
             exit_trade = False
             
@@ -131,7 +111,7 @@ for _, r in E.iterrows():
     
     if num_trade_days > 0:
         trade_returns[pair_name] = pair_returns.dropna()
-        print(f"{pair_name}: {num_trade_days} days in trade (edge: {r['edge']:.4f})")
+        print(f"{pair_name}: {num_trade_days} days in trade")
 
 if len(trade_returns) < 1:
     print("No valid pairs with trade periods for correlation analysis")
