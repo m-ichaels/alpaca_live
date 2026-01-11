@@ -55,17 +55,12 @@ def run_script(script_name, description):
     sys.stdout.flush()
     
     try:
-<<<<<<< HEAD
-=======
-        # Set environment to force unbuffered output
->>>>>>> 9e9798d47b88df72db715ebfdd10d4e6f4298a1c
         env = os.environ.copy()
         env['PYTHONUNBUFFERED'] = '1'
         
         process = subprocess.Popen(
             [sys.executable, '-u', script_name],
             stdout=subprocess.PIPE,
-<<<<<<< HEAD
             stderr=subprocess.STDOUT,
             text=True,
             bufsize=1,
@@ -83,36 +78,6 @@ def run_script(script_name, description):
             
     except Exception as e:
         print(f"[X] Unexpected error running {script_name}: {e}")
-=======
-            stderr=subprocess.STDOUT,  # Merge stderr into stdout
-            text=True,
-            bufsize=1,
-            universal_newlines=True,
-            env=env  # Pass the modified environment
-        )
-        
-        # Stream output in real-time
-        for line in iter(process.stdout.readline, ''):
-            if line:
-                print(line.rstrip())
-                sys.stdout.flush()  # Force flush after each line
-        
-        process.wait()
-        return_code = process.returncode
-        
-        if return_code == 0:
-            print(f"[OK] {script_name} completed successfully")
-            sys.stdout.flush()
-            return True
-        else:
-            print(f"[X] {script_name} failed with exit code {return_code}")
-            sys.stdout.flush()
-            return False
-            
-    except Exception as e:
-        print(f"[X] Unexpected error: {e}")
-        sys.stdout.flush()
->>>>>>> 9e9798d47b88df72db715ebfdd10d4e6f4298a1c
         return False
 
 def main():
@@ -133,19 +98,12 @@ def main():
         ("data_getting.py", "Step 2: Downloading historical price data"),
         ("cleaning.py", "Step 3: Cleaning and preprocessing data"),
         ("pair_getting.py", "Step 4: Finding cointegrated pairs"),
-<<<<<<< HEAD
         ("edge.py", "Step 5: Calculating entry signals and OU parameters"),
         ("correlations.py", "Step 6: Calculating pair correlations"),
         ("diversification.py", "Step 7: Kelly criterion position sizing"),
         ("portfolio_kelly.py", "Step 8: Executing trades based on sized signals"),
         ("comparison.py", "Step 9: Comparing ideal vs current portfolio"),
         ("execute.py", "Step 10: Executing trades via Alpaca API")
-=======
-        ("get_entry_criteria.py", "Step 5: Calculating entry signals and OU parameters"),
-        ("correlations.py", "Step 6: Calculating pair correlations during trade periods"),
-        ("sizing.py", "Step 7: Kelly criterion position sizing"),
-        ("execute.py", "Step 8: Executing trades based on sized signals")
->>>>>>> 9e9798d47b88df72db715ebfdd10d4e6f4298a1c
     ]
     
     results = {}
