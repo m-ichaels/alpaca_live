@@ -9,7 +9,7 @@ from auth import KEY, SECRET
 
 # Configuration
 TAKE_PROFIT_Z = 0.5    # Close when spread reverts near mean
-STOP_LOSS_Z = 4.0      # Close if divergence becomes extreme
+STOP_LOSS_Z = 3.0      # Close if divergence becomes extreme
 TRACKER_FILE = "data/open_pairs.csv"
 HISTORY_FILE = "data/trade_history.csv"
 

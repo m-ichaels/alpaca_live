@@ -95,6 +95,10 @@ def main():
     # Storage for results
     results = []
     
+    # Track filtered pairs
+    skipped_inside_target = 0
+    skipped_outside_stop = 0
+    
     for idx, row in pairs_df.iterrows():
         stock1 = row['stock1']
         stock2 = row['stock2']
@@ -112,26 +116,47 @@ def main():
             # Current z-score (most recent)
             z_current = z_spread.iloc[-1]
             
+            # FILTER: Skip pairs already inside take-profit zone or outside stop-loss
+            if abs(z_current) < TAKE_PROFIT_Z:
+                # Already inside the take-profit zone (too close to mean)
+                skipped_inside_target += 1
+                continue
+            
+            if abs(z_current) > STOP_LOSS_Z:
+                # Already outside the stop-loss (too far from mean)
+                skipped_outside_stop += 1
+                continue
+            
             # Estimate OU parameters from the spread (not z-score)
             theta, vol = estimate_ou_parameters(spread)
             
-            # Define barriers
-            if z_current > 0:
-                b_target = TAKE_PROFIT_Z
-                b_stop = STOP_LOSS_Z
-                signal = "LONG_SPREAD"
-            else:
-                b_target = -TAKE_PROFIT_Z
-                b_stop = -STOP_LOSS_Z
-                signal = "SHORT_SPREAD"
+            # FIXED: Define barriers for MEAN REVERSION
+            # Normalize to work with absolute values to ensure symmetry
+            abs_z = abs(z_current)
             
-            # Calculate gain/loss in z-score terms
-            gain = abs(z_current - b_target)
-            loss = abs(z_current - b_stop)
+            # For the probability calculation, work in normalized space
+            # where we're always moving from abs_z toward TAKE_PROFIT_Z
+            # This ensures symmetric treatment of positive and negative z-scores
             
+            # Barriers in normalized (absolute) space
+            b_target_abs = TAKE_PROFIT_Z  # Closer to zero
+            b_stop_abs = STOP_LOSS_Z      # Further from zero
+            
+            # Calculate edge using normalized values
+            gain = abs_z - b_target_abs  # Distance to target
+            loss = b_stop_abs - abs_z     # Distance to stop
+            
+            # Calculate probability using NORMALIZED position
+            # We're at abs_z, moving toward b_target_abs, with stop at b_stop_abs
             edge, p_target, p_stop = calculate_edge(
-                z_current, theta, vol, b_target, b_stop, gain, loss
+                abs_z, theta, vol, b_target_abs, b_stop_abs, gain, loss
             )
+            
+            # Determine signal based on original sign
+            if z_current > 0:
+                signal = "SHORT_SPREAD"   # Short stock1, Long stock2
+            else:
+                signal = "LONG_SPREAD"     # Long stock1, Short stock2
             
             results.append({
                 'stock1': stock1,
@@ -163,6 +188,9 @@ def main():
     results_df.to_csv("data/pair_edges.csv", index=False)
     
     print(f"\nCalculated edges for {len(results_df)} pairs")
+    print(f"Filtered out:")
+    print(f"  - {skipped_inside_target} pairs already inside take-profit zone (|z| < {TAKE_PROFIT_Z})")
+    print(f"  - {skipped_outside_stop} pairs already outside stop-loss (|z| > {STOP_LOSS_Z})")
     print(f"Saved to data/pair_edges.csv")
     
     # Display top 10 by edge
