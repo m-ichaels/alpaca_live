@@ -1,327 +1,360 @@
 import pandas as pd
-import os
-from datetime import datetime
+import time
 from alpaca.trading.client import TradingClient
 from alpaca.trading.requests import MarketOrderRequest
 from alpaca.trading.enums import OrderSide, TimeInForce
 from auth import KEY, SECRET
 
-# ============================================================================
-# PAIR TRACKER FUNCTIONS (built into execute.py)
-# ============================================================================
+# Setup Alpaca
+tc = TradingClient(KEY, SECRET, paper=True)
 
-TRACKER_FILE = "data/open_pairs.csv"
-HISTORY_FILE = "data/trade_history.csv"
+print("=" * 80)
+print("PORTFOLIO EXECUTION - Transitioning to Recommended Portfolio")
+print("=" * 80)
 
-def initialize_tracker():
-    """Initialize tracker file with proper columns if it doesn't exist or is empty"""
-    try:
-        # Check if file exists and has content
-        if os.path.exists(TRACKER_FILE):
-            try:
-                tracker = pd.read_csv(TRACKER_FILE)
-                if len(tracker.columns) > 0:
-                    return  # File is valid, nothing to do
-            except pd.errors.EmptyDataError:
-                pass  # File is empty, will recreate
-        
-        # Create new tracker with proper columns (NOW INCLUDING hedge_ratio)
-        tracker = pd.DataFrame(columns=[
-            'stock1', 'stock2', 'signal', 'z_score', 'hedge_ratio',
-            'capital_allocation', 'entry_date', 
-            'order1_id', 'order2_id', 'status', 'exit_date'
-        ])
-        tracker.to_csv(TRACKER_FILE, index=False)
-        print(f"[OK] Initialized tracker file: {TRACKER_FILE}")
-        
-    except Exception as e:
-        print(f"[!] Warning: Could not initialize tracker - {e}")
-
-def initialize_trade_history():
-    """Initialize trade history file for tracking outcomes"""
-    try:
-        if not os.path.exists(HISTORY_FILE):
-            history = pd.DataFrame(columns=[
-                'stock1', 'stock2', 'entry_date', 'entry_z', 'signal', 
-                'capital', 'exit_date', 'exit_z', 'exit_reason', 'win'
-            ])
-            history.to_csv(HISTORY_FILE, index=False)
-            print(f"[OK] Initialized trade history: {HISTORY_FILE}")
-    except Exception as e:
-        print(f"[!] Warning: Could not initialize trade history - {e}")
-
-def add_open_pair(stock1, stock2, signal, z_score, hedge_ratio, capital_allocation, order1_id, order2_id):
-    """Record a newly opened pair position"""
-    try:
-        # Ensure tracker is initialized
-        initialize_tracker()
-        
-        tracker = pd.read_csv(TRACKER_FILE)
-        
-        new_entry = pd.DataFrame([{
-            'stock1': stock1,
-            'stock2': stock2,
-            'signal': signal,
-            'z_score': z_score,
-            'hedge_ratio': hedge_ratio,  # STORE HEDGE RATIO!
-            'capital_allocation': capital_allocation,
-            'entry_date': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-            'order1_id': order1_id,
-            'order2_id': order2_id,
-            'status': 'open',
-            'exit_date': ''
-        }])
-        
-        tracker = pd.concat([tracker, new_entry], ignore_index=True)
-        tracker.to_csv(TRACKER_FILE, index=False)
-        
-        print(f"  [OK] Tracked in open_pairs.csv")
-        
-    except Exception as e:
-        print(f"  [!] Warning: Could not track pair - {e}")
-
-def log_trade_entry(stock1, stock2, signal, z_score, capital_allocation):
-    """Log trade entry to history file for later outcome tracking"""
-    try:
-        initialize_trade_history()
-        
-        entry_log = pd.DataFrame([{
-            'stock1': stock1,
-            'stock2': stock2,
-            'entry_date': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-            'entry_z': z_score,
-            'signal': signal,
-            'capital': capital_allocation,
-            'exit_date': None,
-            'exit_z': None,
-            'exit_reason': None,
-            'win': None
-        }])
-        
-        if os.path.exists(HISTORY_FILE):
-            entry_log.to_csv(HISTORY_FILE, mode='a', header=False, index=False)
-        else:
-            entry_log.to_csv(HISTORY_FILE, index=False)
-        
-        print(f"  [OK] Logged to trade_history.csv")
-        
-    except Exception as e:
-        print(f"  [!] Warning: Could not log trade entry - {e}")
-
-def reconcile_with_alpaca(trading_client):
-    """Reconcile tracker with actual Alpaca positions"""
-    try:
-        # Ensure tracker is initialized
-        initialize_tracker()
-        
-        tracker = pd.read_csv(TRACKER_FILE)
-        
-        if len(tracker) == 0:
-            print("  [OK] No open pairs to reconcile\n")
-            return
-        
-        open_tracker = tracker[tracker['status'] == 'open']
-        
-        if len(open_tracker) == 0:
-            print("  [OK] No open pairs to reconcile\n")
-            return
-        
-        # Get current Alpaca positions
-        positions = trading_client.get_all_positions()
-        current_holdings = {p.symbol for p in positions}
-        
-        print("\n--- Reconciling tracker with Alpaca positions ---")
-        
-        changes_made = False
-        for idx, row in open_tracker.iterrows():
-            stock1, stock2 = row['stock1'], row['stock2']
-            
-            # If either leg is missing from Alpaca, close the pair in tracker
-            if stock1 not in current_holdings or stock2 not in current_holdings:
-                print(f"  [!] Pair {stock1}/{stock2} incomplete - closing in tracker")
-                tracker.loc[idx, 'status'] = 'closed'
-                tracker.loc[idx, 'exit_date'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-                changes_made = True
-        
-        if changes_made:
-            tracker.to_csv(TRACKER_FILE, index=False)
-            print("  [OK] Reconciliation complete\n")
-        else:
-            print("  [OK] All tracked pairs match Alpaca\n")
-        
-    except Exception as e:
-        print(f"  [!] Warning: Could not reconcile - {e}\n")
-
-# ============================================================================
-# MAIN EXECUTION LOGIC
-# ============================================================================
-
-# Ensure data directory exists
-os.makedirs("data", exist_ok=True)
-
-# Initialize tracker and history files
-initialize_tracker()
-initialize_trade_history()
-
-# Connect to Alpaca
-trading_client = TradingClient(KEY, SECRET, paper=True)
-
-# Reconcile tracker with actual positions first
-print("Reconciling tracker with Alpaca positions...")
-reconcile_with_alpaca(trading_client)
-
-# Load Kelly-sized signals (already checked for feasibility)
+# Load portfolio orders from reconciliation
 try:
-    signals_df = pd.read_csv("data/sized_signals.csv")
-    print("Using Kelly-sized signals from sizing.py")
+    orders_df = pd.read_csv("data/portfolio_orders.csv")
+    print(f"\nLoaded {len(orders_df)} required actions from portfolio_orders.csv")
 except FileNotFoundError:
-    print("ERROR: sized_signals.csv not found. Run sizing.py first!")
-    exit(1)
+    print("\nERROR: portfolio_orders.csv not found. Run portfolio_reconciliation.py first.")
+    exit()
 
-print(f"Processing {len(signals_df)} pre-validated trading signals")
-print(f"Expected Capital Deployment: ${signals_df['capital_allocation'].sum():,.2f}\n")
+if len(orders_df) == 0:
+    print("\nNo actions required - portfolio already aligned!")
+    exit()
 
-# Get current positions (double-check)
-positions = trading_client.get_all_positions()
-current_holdings = {p.symbol for p in positions}
+# Get current account state
+acct = tc.get_account()
+equity = float(acct.equity)
+cash = float(acct.cash)
 
-executed_trades = []
-skipped_trades = []
+print(f"\nAccount Status:")
+print(f"  Equity: ${equity:,.2f}")
+print(f"  Cash Available: ${cash:,.2f}")
 
-for idx, row in signals_df.iterrows():
-    stock1 = row['stock1']
-    stock2 = row['stock2']
-    signal = row['signal']
-    
-    print(f"\n--- Pair {idx + 1}/{len(signals_df)}: {stock1}/{stock2} ---")
-    print(f"Signal: {signal}, Z-score: {row['z_score']:.2f}")
-    print(f"Allocated Capital: ${row['capital_allocation']:,.2f}")
-    print(f"Planned: {int(row['shares1'])} {stock1} @ ${row['price1']:.2f}, "
-          f"{int(row['shares2'])} {stock2} @ ${row['price2']:.2f}")
-    
-    # Skip if positions exist (shouldn't happen if sizing.py ran recently)
-    if stock1 in current_holdings or stock2 in current_holdings:
-        print(f"[!] Skipping - existing positions detected")
-        skipped_trades.append({
-            'stock1': stock1,
-            'stock2': stock2,
-            'reason': 'existing_positions',
-            'capital_allocation': row['capital_allocation']
-        })
-        continue
-    
-    # Use pre-calculated shares from sizing.py
-    shares1 = int(row['shares1'])
-    shares2 = int(row['shares2'])
-    
-    # Determine order sides based on signal
-    if signal == 'BUY':
-        side1 = OrderSide.BUY
-        side2 = OrderSide.SELL
-    else:
-        side1 = OrderSide.SELL
-        side2 = OrderSide.BUY
-    
-    try:
-        # Place first order
-        order1 = trading_client.submit_order(MarketOrderRequest(
-            symbol=stock1,
-            qty=shares1,
-            side=side1,
-            time_in_force=TimeInForce.DAY
-        ))
-        
-        # Place second order
-        order2 = trading_client.submit_order(MarketOrderRequest(
-            symbol=stock2,
-            qty=shares2,
-            side=side2,
-            time_in_force=TimeInForce.DAY
-        ))
-        
-        print(f"[OK] Executed:")
-        print(f"  {stock1}: {side1.value} {shares1} @ ${row['price1']:.2f} (${shares1 * row['price1']:,.2f})")
-        print(f"  {stock2}: {side2.value} {shares2} @ ${row['price2']:.2f} (${shares2 * row['price2']:,.2f})")
-        
-        # Track this pair as open (NOW STORING HEDGE RATIO)
-        add_open_pair(
-            stock1=stock1,
-            stock2=stock2,
-            signal=signal,
-            z_score=row['z_score'],
-            hedge_ratio=row['hedge_ratio'],  # PASS HEDGE RATIO!
-            capital_allocation=row['capital_allocation'],
-            order1_id=order1.id,
-            order2_id=order2.id
-        )
-        
-        # Log entry to trade history
-        log_trade_entry(
-            stock1=stock1,
-            stock2=stock2,
-            signal=signal,
-            z_score=row['z_score'],
-            capital_allocation=row['capital_allocation']
-        )
-        
-        executed_trades.append({
-            'stock1': stock1,
-            'stock2': stock2,
-            'action1': side1.value,
-            'shares1': shares1,
-            'price1': row['price1'],
-            'action2': side2.value,
-            'shares2': shares2,
-            'price2': row['price2'],
-            'signal': signal,
-            'z_score': row['z_score'],
-            'capital_allocation': row['capital_allocation'],
-            'kelly_fraction': row['kelly_fraction'],
-            'order1_id': order1.id,
-            'order2_id': order2.id
-        })
-        
-    except Exception as e:
-        print(f"[X] Error executing trade: {e}")
-        skipped_trades.append({
-            'stock1': stock1,
-            'stock2': stock2,
-            'reason': str(e),
-            'capital_allocation': row['capital_allocation']
-        })
+# Sort by priority to execute in correct order
+orders_df = orders_df.sort_values(['priority', 'edge'], ascending=[True, False])
 
-# Save results
+# Track execution results
+executed = []
+failed = []
+skipped = []
+
+# PRIORITY 0: Cancel Orders
+print("\n" + "=" * 80)
+print("PHASE 1: Canceling Orders")
+print("=" * 80)
+
+cancel_orders = orders_df[orders_df['action'] == 'CANCEL_ORDER']
+
+if len(cancel_orders) > 0:
+    for _, order in cancel_orders.iterrows():
+        try:
+            tc.cancel_order_by_id(order['order_id'])
+            print(f"[✓] Canceled {order['symbol']} - {order['side']} {order['qty']} shares")
+            executed.append({
+                'phase': 'Cancel',
+                'symbol': order['symbol'],
+                'action': 'CANCEL_ORDER',
+                'side': order['side'],
+                'qty': order['qty'],
+                'status': 'success',
+                'order_id': order['order_id']
+            })
+            time.sleep(0.5)  # Rate limiting
+        except Exception as e:
+            print(f"[✗] Failed to cancel {order['symbol']}: {e}")
+            failed.append({
+                'phase': 'Cancel',
+                'symbol': order['symbol'],
+                'action': 'CANCEL_ORDER',
+                'error': str(e)
+            })
+else:
+    print("No orders to cancel")
+
+# PRIORITY 1: Close/Reduce Positions
+print("\n" + "=" * 80)
+print("PHASE 2: Closing/Reducing Positions")
+print("=" * 80)
+
+close_reduce_orders = orders_df[orders_df['priority'] == 1]
+
+if len(close_reduce_orders) > 0:
+    for _, order in close_reduce_orders.iterrows():
+        symbol = order['symbol']
+        qty = int(order['qty'])
+        side_str = order['side']
+        action = order['action']
+        
+        # Convert side string to OrderSide enum
+        side = OrderSide.BUY if side_str == 'buy' else OrderSide.SELL
+        
+        try:
+            # Place market order
+            submitted_order = tc.submit_order(MarketOrderRequest(
+                symbol=symbol,
+                qty=qty,
+                side=side,
+                time_in_force=TimeInForce.DAY
+            ))
+            
+            print(f"[✓] {action} {symbol} - {side_str.upper()} {qty} shares (Order ID: {submitted_order.id})")
+            
+            executed.append({
+                'phase': 'Close/Reduce',
+                'symbol': symbol,
+                'action': action,
+                'side': side_str,
+                'qty': qty,
+                'status': 'success',
+                'order_id': submitted_order.id,
+                'pair': order.get('pair', 'N/A')
+            })
+            
+            time.sleep(0.5)  # Rate limiting
+            
+        except Exception as e:
+            print(f"[✗] Failed to {action} {symbol}: {e}")
+            failed.append({
+                'phase': 'Close/Reduce',
+                'symbol': symbol,
+                'action': action,
+                'side': side_str,
+                'qty': qty,
+                'error': str(e)
+            })
+else:
+    print("No positions to close or reduce")
+
+# Wait for orders to settle
+if len(close_reduce_orders) > 0:
+    print("\nWaiting 5 seconds for orders to settle...")
+    time.sleep(5)
+    
+    # Update cash after closing positions
+    acct = tc.get_account()
+    cash = float(acct.cash)
+    print(f"Updated cash available: ${cash:,.2f}")
+
+# PRIORITY 2: Open/Add Positions
+print("\n" + "=" * 80)
+print("PHASE 3: Opening/Adding Positions")
+print("=" * 80)
+
+open_add_orders = orders_df[orders_df['priority'] == 2].sort_values('edge', ascending=False)
+
+if len(open_add_orders) > 0:
+    # Group by pair to execute legs together
+    pairs = {}
+    for _, order in open_add_orders.iterrows():
+        pair = order.get('pair', 'N/A')
+        if pair not in pairs:
+            pairs[pair] = []
+        pairs[pair].append(order)
+    
+    # Execute each pair
+    for pair_name, pair_orders in pairs.items():
+        if pair_name == 'N/A':
+            # Execute standalone orders
+            for order in pair_orders:
+                symbol = order['symbol']
+                qty = int(order['qty'])
+                side_str = order['side']
+                action = order['action']
+                
+                # Check cash availability
+                estimated_cost = qty * order.get('target_price', 0)
+                if estimated_cost > cash * 1.1:  # 10% buffer for slippage
+                    print(f"[!] Skipping {symbol} - insufficient cash (need ~${estimated_cost:,.0f}, have ${cash:,.2f})")
+                    skipped.append({
+                        'phase': 'Open/Add',
+                        'symbol': symbol,
+                        'action': action,
+                        'reason': 'insufficient_cash'
+                    })
+                    continue
+                
+                side = OrderSide.BUY if side_str == 'buy' else OrderSide.SELL
+                
+                try:
+                    submitted_order = tc.submit_order(MarketOrderRequest(
+                        symbol=symbol,
+                        qty=qty,
+                        side=side,
+                        time_in_force=TimeInForce.DAY
+                    ))
+                    
+                    print(f"[✓] {action} {symbol} - {side_str.upper()} {qty} shares (Order ID: {submitted_order.id})")
+                    
+                    executed.append({
+                        'phase': 'Open/Add',
+                        'symbol': symbol,
+                        'action': action,
+                        'side': side_str,
+                        'qty': qty,
+                        'status': 'success',
+                        'order_id': submitted_order.id,
+                        'pair': pair_name
+                    })
+                    
+                    # Update available cash estimate
+                    cash -= estimated_cost if side_str == 'buy' else -estimated_cost
+                    
+                    time.sleep(0.5)
+                    
+                except Exception as e:
+                    print(f"[✗] Failed to {action} {symbol}: {e}")
+                    failed.append({
+                        'phase': 'Open/Add',
+                        'symbol': symbol,
+                        'action': action,
+                        'error': str(e)
+                    })
+        else:
+            # Execute pair legs together
+            print(f"\nExecuting pair: {pair_name}")
+            
+            # Calculate total capital needed for pair
+            total_cost = sum(order['qty'] * order.get('target_price', 0) for order in pair_orders)
+            
+            if total_cost > cash * 1.1:
+                print(f"[!] Skipping pair {pair_name} - insufficient cash (need ~${total_cost:,.0f}, have ${cash:,.2f})")
+                for order in pair_orders:
+                    skipped.append({
+                        'phase': 'Open/Add',
+                        'symbol': order['symbol'],
+                        'action': order['action'],
+                        'pair': pair_name,
+                        'reason': 'insufficient_cash'
+                    })
+                continue
+            
+            # Execute both legs
+            pair_success = True
+            pair_orders_submitted = []
+            
+            for order in pair_orders:
+                symbol = order['symbol']
+                qty = int(order['qty'])
+                side_str = order['side']
+                action = order['action']
+                
+                side = OrderSide.BUY if side_str == 'buy' else OrderSide.SELL
+                
+                try:
+                    submitted_order = tc.submit_order(MarketOrderRequest(
+                        symbol=symbol,
+                        qty=qty,
+                        side=side,
+                        time_in_force=TimeInForce.DAY
+                    ))
+                    
+                    print(f"  [✓] {symbol} - {side_str.upper()} {qty} shares @ ~${order.get('target_price', 0):.2f}")
+                    
+                    pair_orders_submitted.append({
+                        'phase': 'Open/Add',
+                        'symbol': symbol,
+                        'action': action,
+                        'side': side_str,
+                        'qty': qty,
+                        'status': 'success',
+                        'order_id': submitted_order.id,
+                        'pair': pair_name,
+                        'edge': order.get('edge', 0)
+                    })
+                    
+                    time.sleep(0.5)
+                    
+                except Exception as e:
+                    print(f"  [✗] Failed {symbol}: {e}")
+                    pair_success = False
+                    failed.append({
+                        'phase': 'Open/Add',
+                        'symbol': symbol,
+                        'action': action,
+                        'pair': pair_name,
+                        'error': str(e)
+                    })
+                    break
+            
+            if pair_success:
+                executed.extend(pair_orders_submitted)
+                cash -= total_cost
+                print(f"  [✓] Pair {pair_name} executed successfully (Edge: {pair_orders[0].get('edge', 0):.4f})")
+            else:
+                print(f"  [✗] Pair {pair_name} execution failed - may need manual cleanup")
+else:
+    print("No positions to open or add")
+
+# Save execution results
 print("\n" + "=" * 80)
 print("EXECUTION SUMMARY")
 print("=" * 80)
 
-if executed_trades:
-    trades_df = pd.DataFrame(executed_trades)
-    trades_df.to_csv("data/executed_trades.csv", index=False)
+if executed:
+    executed_df = pd.DataFrame(executed)
+    executed_df.to_csv("data/execution_log.csv", index=False)
     
-    print(f"[OK] Successfully Executed: {len(executed_trades)} pairs")
-    print(f"  Total Capital Deployed: ${trades_df['capital_allocation'].sum():,.2f}")
-    print(f"  Average Position Size: ${trades_df['capital_allocation'].mean():,.2f}")
-    print(f"  Total Kelly Fraction: {trades_df['kelly_fraction'].sum():.2%}")
-else:
-    print("[X] No trades executed")
+    print(f"\n[✓] Successfully Executed: {len(executed)} actions")
+    print(f"    Phase 1 (Cancel): {len(executed_df[executed_df['phase'] == 'Cancel'])}")
+    print(f"    Phase 2 (Close/Reduce): {len(executed_df[executed_df['phase'] == 'Close/Reduce'])}")
+    print(f"    Phase 3 (Open/Add): {len(executed_df[executed_df['phase'] == 'Open/Add'])}")
+    
+    # Show unique pairs traded
+    pairs_executed = executed_df[executed_df['pair'] != 'N/A']['pair'].unique()
+    if len(pairs_executed) > 0:
+        print(f"\n    Pairs executed: {len(pairs_executed)}")
+        for pair in pairs_executed:
+            pair_data = executed_df[executed_df['pair'] == pair]
+            # FIX: Check if pair_data is empty before accessing
+            if len(pair_data) > 0 and 'edge' in pair_data.columns:
+                edge = pair_data['edge'].iloc[0]
+                print(f"      - {pair} (Edge: {edge:.4f})")
+            else:
+                print(f"      - {pair}")
 
-if skipped_trades:
-    skipped_df = pd.DataFrame(skipped_trades)
-    skipped_df.to_csv("data/skipped_trades.csv", index=False)
+if failed:
+    failed_df = pd.DataFrame(failed)
+    failed_df.to_csv("data/execution_failures.csv", index=False)
     
-    print(f"\n[!] Skipped: {len(skipped_trades)} pairs")
-    print(f"  Lost Capital: ${skipped_df['capital_allocation'].sum():,.2f}")
-    print("\nSkipped trades saved to data/skipped_trades.csv")
+    print(f"\n[✗] Failed: {len(failed)} actions")
+    for _, fail in failed_df.iterrows():
+        print(f"    - {fail['symbol']} ({fail['action']}): {fail.get('error', 'Unknown error')}")
+
+if skipped:
+    skipped_df = pd.DataFrame(skipped)
+    skipped_df.to_csv("data/execution_skipped.csv", index=False)
+    
+    print(f"\n[!] Skipped: {len(skipped)} actions")
+    for reason in skipped_df['reason'].unique():
+        count = len(skipped_df[skipped_df['reason'] == reason])
+        print(f"    - {reason}: {count} actions")
+
+# Final account status
+acct = tc.get_account()
+final_equity = float(acct.equity)
+final_cash = float(acct.cash)
+
+print(f"\n" + "-" * 80)
+print("Final Account Status:")
+print(f"  Equity: ${final_equity:,.2f} (change: ${final_equity - equity:,.2f})")
+print(f"  Cash: ${final_cash:,.2f} (change: ${final_cash - cash:,.2f})")
+
+# Get final positions
+final_positions = tc.get_all_positions()
+print(f"  Total Positions: {len(final_positions)}")
 
 print("=" * 80)
 
-# Final efficiency metrics
-if executed_trades:
-    expected_total = signals_df['capital_allocation'].sum()
-    actual_total = trades_df['capital_allocation'].sum()
-    efficiency = (actual_total / expected_total) * 100 if expected_total > 0 else 0
-    
-    print(f"\nExecution Efficiency: {efficiency:.1f}%")
-    print(f"Expected: ${expected_total:,.2f}")
-    print(f"Achieved: ${actual_total:,.2f}")
+if executed:
+    print(f"\nExecution log saved to: data/execution_log.csv")
+if failed:
+    print(f"Failures saved to: data/execution_failures.csv")
+if skipped:
+    print(f"Skipped actions saved to: data/execution_skipped.csv")
+
+print("\n" + "=" * 80)
+print("EXECUTION COMPLETE")
+print("=" * 80)

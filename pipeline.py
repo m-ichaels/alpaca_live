@@ -68,10 +68,12 @@ def main():
         ("data_getting.py", "Step 2: Downloading historical price data"),
         ("cleaning.py", "Step 3: Cleaning and preprocessing data"),
         ("pair_getting.py", "Step 4: Finding cointegrated pairs"),
-        ("get_entry_criteria.py", "Step 5: Calculating entry signals and OU parameters"),
+        ("edge.py", "Step 5: Calculating entry signals and OU parameters"),
         ("correlations.py", "Step 6: Calculating pair correlations during trade periods"),
-        ("sizing.py", "Step 7: Kelly criterion position sizing"),
-        ("execute.py", "Step 8: Executing trades based on sized signals")
+        ("diversification.py", "Step 7: Kelly criterion position sizing"),
+        ("portfolio_kelly.py", "Step 8: Executing trades based on sized signals"),
+        ("comparison.py", "Step 9: Comparing ideal vs current portfolio construction"),
+        ("execute.py", "Step 10: Executing trades via Alpaca API")
     ]
     
     results = {}
