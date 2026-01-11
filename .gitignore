@@ -1,4 +1,6 @@
 # API Credentials - keep local keys safe
+auth.py
+
 
 # Data files - don't commit large CSVs
 data/
