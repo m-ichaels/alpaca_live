@@ -1,2 +1,0 @@
-stock1,stock2,reason,capital_allocation
-STZ,MU,"{""code"":40310000,""existing_order_id"":""2cfcc24e-9b9f-48b8-86c6-9362a9da0d54"",""message"":""potential wash trade detected. use complex orders"",""reject_reason"":""opposite side market/stop order exists""}",2751.73
