@@ -1,11 +1,68 @@
 import subprocess
 import sys
 import os
-from datetime import datetime
+from datetime import datetime, time
+import pytz
+import pandas_market_calendars as mcal
 
 # Ensure output is visible immediately
 sys.stdout.reconfigure(line_buffering=True)
 sys.stderr.reconfigure(line_buffering=True)
+
+def should_run_pipeline():
+    """
+    Determine if the pipeline should run based on market schedule.
+    Returns True if we should run now (1 hour before close), False otherwise.
+    """
+    et_tz = pytz.timezone('America/New_York')
+    now_et = datetime.now(et_tz)
+    today = now_et.date()
+    current_time = now_et.time()
+    
+    print("\n" + "="*70)
+    print("MARKET SCHEDULE CHECK")
+    print("="*70)
+    
+    # Get NYSE calendar
+    nyse = mcal.get_calendar('NYSE')
+    
+    # Check today's schedule
+    schedule = nyse.schedule(start_date=today, end_date=today)
+    
+    if schedule.empty:
+        print(f"Market is CLOSED today ({today})")
+        print("="*70)
+        return False
+    
+    # Get market close time for today
+    market_close = schedule.iloc[0]['market_close'].tz_convert(et_tz).time()
+    
+    # Determine if early close (before 3 PM) or regular close (4 PM)
+    is_early_close = market_close < time(15, 0)
+    
+    if is_early_close:
+        # Early close at 1 PM ET -> run at 12 PM ET
+        target_run_time = time(12, 0)
+        window_end = time(12, 30)
+        print(f"Early close day - Market closes at {market_close.strftime('%I:%M %p')} ET")
+    else:
+        # Regular close at 4 PM ET -> run at 3 PM ET
+        target_run_time = time(15, 0)
+        window_end = time(15, 30)
+        print(f"Regular trading day - Market closes at {market_close.strftime('%I:%M %p')} ET")
+    
+    print(f"Target run time: {target_run_time.strftime('%I:%M %p')} ET")
+    print(f"Current time: {current_time.strftime('%I:%M:%S %p')} ET")
+    
+    # Allow a 30-minute window for execution
+    if target_run_time <= current_time <= window_end:
+        print("✓ Within execution window - PROCEEDING WITH PIPELINE")
+        print("="*70)
+        return True
+    else:
+        print("✗ Outside execution window - SKIPPING PIPELINE")
+        print("="*70)
+        return False
 
 def run_script(script_name, description):
     """Run a Python script and stream output in real-time."""
@@ -47,6 +104,16 @@ def main():
     print("STATISTICAL ARBITRAGE PIPELINE")
     print(f"System Start: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     print("="*70)
+    
+    # Check if we should run based on market schedule
+    try:
+        if not should_run_pipeline():
+            print("\nPipeline execution skipped - not the correct time window")
+            return 0
+    except Exception as e:
+        print(f"\nError checking market schedule: {e}")
+        print("Skipping pipeline execution for safety")
+        return 1
     
     os.makedirs("data", exist_ok=True)
     

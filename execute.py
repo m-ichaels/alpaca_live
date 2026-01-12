@@ -1,5 +1,6 @@
 import pandas as pd
 import time
+from datetime import datetime
 from alpaca.trading.client import TradingClient
 from alpaca.trading.requests import MarketOrderRequest
 from alpaca.trading.enums import OrderSide, TimeInForce
@@ -11,21 +12,132 @@ except ImportError:
 # Setup Alpaca
 tc = TradingClient(KEY, SECRET, paper=True)
 
+TRACKER_FILE = "data/open_pairs.csv"
+HISTORY_FILE = "data/trade_history.csv"
+
+def initialize_tracker():
+    """Initialize the open pairs tracker file if it doesn't exist"""
+    if not os.path.exists(TRACKER_FILE):
+        pd.DataFrame(columns=[
+            'stock1', 'stock2', 'signal', 'z_score', 'hedge_ratio',
+            'shares1', 'shares2', 'capital_allocation', 'entry_date',
+            'entry_price1', 'entry_price2', 'status', 'edge', 'p_target'
+        ]).to_csv(TRACKER_FILE, index=False)
+
+def initialize_history():
+    """Initialize the trade history file if it doesn't exist"""
+    if not os.path.exists(HISTORY_FILE):
+        pd.DataFrame(columns=[
+            'stock1', 'stock2', 'signal', 'z_score', 'entry_date',
+            'entry_price1', 'entry_price2', 'capital_allocation',
+            'exit_date', 'exit_z', 'exit_reason', 'win', 'edge'
+        ]).to_csv(HISTORY_FILE, index=False)
+
+def add_pair_to_tracker(pair_data):
+    """Add a newly opened pair to the tracker"""
+    try:
+        # Load existing tracker
+        if os.path.exists(TRACKER_FILE):
+            tracker = pd.read_csv(TRACKER_FILE)
+        else:
+            tracker = pd.DataFrame()
+        
+        # Add new pair
+        new_row = pd.DataFrame([pair_data])
+        tracker = pd.concat([tracker, new_row], ignore_index=True)
+        
+        # Save
+        tracker.to_csv(TRACKER_FILE, index=False)
+        print(f"  [TRACKER] Added {pair_data['stock1']}/{pair_data['stock2']} to open_pairs.csv")
+        
+    except Exception as e:
+        print(f"  [!] Warning: Could not add pair to tracker - {e}")
+
+def add_trade_to_history(pair_data):
+    """Add a newly opened trade to history for win rate tracking"""
+    try:
+        # Load existing history
+        if os.path.exists(HISTORY_FILE):
+            history = pd.read_csv(HISTORY_FILE)
+        else:
+            history = pd.DataFrame()
+        
+        # Add new trade (exit fields will be filled by tp_sl.py)
+        new_row = pd.DataFrame([{
+            'stock1': pair_data['stock1'],
+            'stock2': pair_data['stock2'],
+            'signal': pair_data['signal'],
+            'z_score': pair_data['z_score'],
+            'entry_date': pair_data['entry_date'],
+            'entry_price1': pair_data['entry_price1'],
+            'entry_price2': pair_data['entry_price2'],
+            'capital_allocation': pair_data['capital_allocation'],
+            'edge': pair_data.get('edge', None),
+            'exit_date': None,
+            'exit_z': None,
+            'exit_reason': None,
+            'win': None
+        }])
+        
+        history = pd.concat([history, new_row], ignore_index=True)
+        
+        # Save
+        history.to_csv(HISTORY_FILE, index=False)
+        print(f"  [HISTORY] Added {pair_data['stock1']}/{pair_data['stock2']} to trade_history.csv")
+        
+    except Exception as e:
+        print(f"  [!] Warning: Could not add trade to history - {e}")
+
+def remove_closed_pairs_from_tracker(symbol):
+    """Remove pairs from tracker if positions were closed outside this script"""
+    try:
+        if not os.path.exists(TRACKER_FILE):
+            return
+        
+        tracker = pd.read_csv(TRACKER_FILE)
+        
+        # Find pairs involving this symbol
+        mask = ((tracker['stock1'] == symbol) | (tracker['stock2'] == symbol)) & (tracker['status'] == 'open')
+        
+        if mask.any():
+            tracker = tracker[~mask]
+            tracker.to_csv(TRACKER_FILE, index=False)
+            print(f"  [TRACKER] Removed pairs involving {symbol} from tracker")
+            
+    except Exception as e:
+        print(f"  [!] Warning: Could not update tracker - {e}")
+
 print("=" * 80)
 print("PORTFOLIO EXECUTION - Transitioning to Recommended Portfolio")
 print("=" * 80)
+
+# Initialize tracking files
+import os
+os.makedirs("data", exist_ok=True)
+initialize_tracker()
+initialize_history()
 
 # Load portfolio orders from reconciliation
 try:
     orders_df = pd.read_csv("data/portfolio_orders.csv")
     print(f"\nLoaded {len(orders_df)} required actions from portfolio_orders.csv")
 except FileNotFoundError:
-    print("\nERROR: portfolio_orders.csv not found. Run portfolio_reconciliation.py first.")
+    print("\nERROR: portfolio_orders.csv not found. Run comparison.py first.")
     exit()
 
 if len(orders_df) == 0:
     print("\nNo actions required - portfolio already aligned!")
     exit()
+
+# Load kelly positions for pair metadata
+try:
+    kelly_df = pd.read_csv("data/kelly_positions.csv")
+    kelly_dict = {}
+    for _, row in kelly_df.iterrows():
+        kelly_dict[f"{row['stock1']}/{row['stock2']}"] = row.to_dict()
+except FileNotFoundError:
+    print("\nWARNING: kelly_positions.csv not found. Tracker will have limited data.")
+    kelly_dict = {}
 
 # Get current account state
 acct = tc.get_account()
@@ -105,6 +217,10 @@ if len(close_reduce_orders) > 0:
             
             print(f"[OK] {action} {symbol} - {side_str.upper()} {qty} shares (Order ID: {submitted_order.id})")
             
+            # Remove from tracker if closing
+            if action == 'CLOSE':
+                remove_closed_pairs_from_tracker(symbol)
+            
             executed.append({
                 'phase': 'Close/Reduce',
                 'symbol': symbol,
@@ -160,7 +276,7 @@ if len(open_add_orders) > 0:
     # Execute each pair
     for pair_name, pair_orders in pairs.items():
         if pair_name == 'N/A':
-            # Execute standalone orders
+            # Execute standalone orders (not tracking these as pairs)
             for order in pair_orders:
                 symbol = order['symbol']
                 qty = int(order['qty'])
@@ -237,6 +353,7 @@ if len(open_add_orders) > 0:
             # Execute both legs
             pair_success = True
             pair_orders_submitted = []
+            executed_prices = {}
             
             for order in pair_orders:
                 symbol = order['symbol']
@@ -255,6 +372,9 @@ if len(open_add_orders) > 0:
                     ))
                     
                     print(f"  [OK] {symbol} - {side_str.upper()} {qty} shares @ ~${order.get('target_price', 0):.2f}")
+                    
+                    # Store executed price for tracking
+                    executed_prices[symbol] = order.get('target_price', 0)
                     
                     pair_orders_submitted.append({
                         'phase': 'Open/Add',
@@ -286,6 +406,34 @@ if len(open_add_orders) > 0:
                 executed.extend(pair_orders_submitted)
                 cash -= total_cost
                 print(f"  [OK] Pair {pair_name} executed successfully (Edge: {pair_orders[0].get('edge', 0):.4f})")
+                
+                # Add to tracker if this is a new pair opening
+                if action == 'OPEN' and pair_name in kelly_dict:
+                    kelly_data = kelly_dict[pair_name]
+                    
+                    # Determine stocks and entry prices
+                    stock1 = kelly_data['stock1']
+                    stock2 = kelly_data['stock2']
+                    
+                    tracker_data = {
+                        'stock1': stock1,
+                        'stock2': stock2,
+                        'signal': kelly_data['signal'],
+                        'z_score': kelly_data['z_score'],
+                        'hedge_ratio': kelly_data['hedge_ratio'],
+                        'shares1': kelly_data['shares1'],
+                        'shares2': kelly_data['shares2'],
+                        'capital_allocation': kelly_data['capital_allocation'],
+                        'entry_date': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                        'entry_price1': executed_prices.get(stock1, kelly_data['price1']),
+                        'entry_price2': executed_prices.get(stock2, kelly_data['price2']),
+                        'status': 'open',
+                        'edge': kelly_data.get('edge', 0),
+                        'p_target': kelly_data.get('p_target', 0)
+                    }
+                    
+                    add_pair_to_tracker(tracker_data)
+                    add_trade_to_history(tracker_data)
             else:
                 print(f"  [X] Pair {pair_name} execution failed - may need manual cleanup")
 else:
@@ -348,6 +496,12 @@ print(f"  Cash: ${final_cash:,.2f} (change: ${final_cash - cash:,.2f})")
 final_positions = tc.get_all_positions()
 print(f"  Total Positions: {len(final_positions)}")
 
+# Show open pairs being tracked
+if os.path.exists(TRACKER_FILE):
+    tracker = pd.read_csv(TRACKER_FILE)
+    open_tracked = tracker[tracker['status'] == 'open']
+    print(f"  Open Pairs Tracked: {len(open_tracked)}")
+
 print("=" * 80)
 
 if executed:
@@ -359,4 +513,6 @@ if skipped:
 
 print("\n" + "=" * 80)
 print("EXECUTION COMPLETE")
+print(f"Open pairs tracker: {TRACKER_FILE}")
+print(f"Trade history: {HISTORY_FILE}")
 print("=" * 80)

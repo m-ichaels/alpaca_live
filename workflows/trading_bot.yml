@@ -2,14 +2,36 @@ name: NYSE Trading Pipeline
 
 on:
   schedule:
-    # 17:00 UTC is 12:00 PM ET.
-    # This ensures we are awake for both 1pm early closes and 4pm normal closes.
+    # Main pipeline: Run at 12:00 PM ET (17:00 UTC) for early close days
     - cron: "0 17 * * 1-5"
-  workflow_dispatch: # Allows manual trigger from the Actions tab
+    # Main pipeline: Run at 3:00 PM ET (20:00 UTC) for regular close days
+    - cron: "0 20 * * 1-5"
+
+    # TP/SL monitoring: Run every hour during trading hours (9:35 AM - 3:35 PM ET)
+    # 9:35 AM ET = 14:35 UTC
+    - cron: "35 14 * * 1-5" # 9:35 AM ET
+    - cron: "35 15 * * 1-5" # 10:35 AM ET
+    - cron: "35 16 * * 1-5" # 11:35 AM ET
+    - cron: "35 17 * * 1-5" # 12:35 PM ET
+    - cron: "35 18 * * 1-5" # 1:35 PM ET
+    - cron: "35 19 * * 1-5" # 2:35 PM ET
+    - cron: "35 20 * * 1-5" # 3:35 PM ET
+
+  workflow_dispatch:
+    inputs:
+      job_type:
+        description: "Which job to run"
+        required: true
+        default: "pipeline"
+        type: choice
+        options:
+          - pipeline
+          - tp_sl
 
 jobs:
   run-pipeline:
     runs-on: ubuntu-latest
+    if: github.event_name == 'schedule' && (github.event.schedule == '0 17 * * 1-5' || github.event.schedule == '0 20 * * 1-5') || (github.event_name == 'workflow_dispatch' && github.event.inputs.job_type == 'pipeline')
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
@@ -18,7 +40,7 @@ jobs:
         uses: actions/setup-python@v4
         with:
           python-version: "3.10"
-          cache: "pip" # Speeds up future runs
+          cache: "pip"
 
       - name: Install Dependencies
         run: |
@@ -27,7 +49,30 @@ jobs:
 
       - name: Run Pipeline
         env:
-          # Map your GitHub Secrets to Environment Variables
           ALPACA_API_KEY: ${{ secrets.ALPACA_API_KEY }}
           ALPACA_SECRET_KEY: ${{ secrets.ALPACA_SECRET_KEY }}
         run: python pipeline.py
+
+  run-tp-sl:
+    runs-on: ubuntu-latest
+    if: github.event_name == 'schedule' && contains(fromJSON('["35 14 * * 1-5", "35 15 * * 1-5", "35 16 * * 1-5", "35 17 * * 1-5", "35 18 * * 1-5", "35 19 * * 1-5", "35 20 * * 1-5"]'), github.event.schedule) || (github.event_name == 'workflow_dispatch' && github.event.inputs.job_type == 'tp_sl')
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: "3.10"
+          cache: "pip"
+
+      - name: Install Dependencies
+        run: |
+          pip install pandas pandas_market_calendars pytz alpaca-trade-api
+          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+
+      - name: Run TP/SL Monitor
+        env:
+          ALPACA_API_KEY: ${{ secrets.ALPACA_API_KEY }}
+          ALPACA_SECRET_KEY: ${{ secrets.ALPACA_SECRET_KEY }}
+        run: python tp_sl.py
