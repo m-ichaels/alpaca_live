@@ -12,7 +12,11 @@ from alpaca.data.requests import StockBarsRequest
 from alpaca.data.timeframe import TimeFrame
 from alpaca.trading.requests import MarketOrderRequest
 from alpaca.trading.enums import OrderSide, TimeInForce
-from auth import KEY, SECRET
+try:
+    from auth_local import KEY, SECRET  # For local testing
+except ImportError:
+    print("Import error")
+    from auth import KEY, SECRET  # For GitHub Actions
 
 # Initialize Dash app
 app = dash.Dash(__name__)

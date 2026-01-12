@@ -8,6 +8,7 @@ from alpaca.data.requests import StockLatestQuoteRequest
 try:
     from auth_local import KEY, SECRET  # For local testing
 except ImportError:
+    print("Import error")
     from auth import KEY, SECRET  # For GitHub Actions
 
 # Configuration

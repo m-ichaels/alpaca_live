@@ -5,7 +5,11 @@ from scipy.optimize import minimize, linprog
 from alpaca.trading.client import TradingClient
 from alpaca.data.historical import StockHistoricalDataClient
 from alpaca.data.requests import StockLatestQuoteRequest
-from auth import KEY, SECRET
+try:
+    from auth_local import KEY, SECRET  # For local testing
+except ImportError:
+    print("Import error")
+    from auth import KEY, SECRET  # For GitHub Actions
 from tp_sl import TAKE_PROFIT_Z, STOP_LOSS_Z
 
 # Setup

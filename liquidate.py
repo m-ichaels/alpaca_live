@@ -6,7 +6,11 @@ from alpaca.trading.requests import MarketOrderRequest
 from alpaca.trading.enums import OrderSide, TimeInForce
 from alpaca.data.historical import StockHistoricalDataClient
 from alpaca.data.requests import StockLatestQuoteRequest, StockLatestTradeRequest
-from auth import KEY, SECRET
+try:
+    from auth_local import KEY, SECRET  # For local testing
+except ImportError:
+    print("Import error")
+    from auth import KEY, SECRET  # For GitHub Actions
 
 # Connect to Alpaca Paper Trading
 trading_client = TradingClient(KEY, SECRET, paper=True)

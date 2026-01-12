@@ -3,7 +3,11 @@ import numpy as np
 from alpaca.trading.client import TradingClient
 from alpaca.trading.requests import GetOrdersRequest
 from alpaca.trading.enums import OrderStatus, QueryOrderStatus
-from auth import KEY, SECRET
+try:
+    from auth_local import KEY, SECRET  # For local testing
+except ImportError:
+    print("Import error")
+    from auth import KEY, SECRET  # For GitHub Actions
 
 # Setup Alpaca
 tc = TradingClient(KEY, SECRET, paper=True)

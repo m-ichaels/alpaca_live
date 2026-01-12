@@ -3,7 +3,10 @@ import time
 from alpaca.trading.client import TradingClient
 from alpaca.trading.requests import MarketOrderRequest
 from alpaca.trading.enums import OrderSide, TimeInForce
-from auth import KEY, SECRET
+try:
+    from auth_local import KEY, SECRET
+except ImportError:
+    from auth import KEY, SECRET
 
 # Setup Alpaca
 tc = TradingClient(KEY, SECRET, paper=True)
@@ -52,7 +55,7 @@ if len(cancel_orders) > 0:
     for _, order in cancel_orders.iterrows():
         try:
             tc.cancel_order_by_id(order['order_id'])
-            print(f"[✓] Canceled {order['symbol']} - {order['side']} {order['qty']} shares")
+            print(f"[OK] Canceled {order['symbol']} - {order['side']} {order['qty']} shares")
             executed.append({
                 'phase': 'Cancel',
                 'symbol': order['symbol'],
@@ -64,7 +67,7 @@ if len(cancel_orders) > 0:
             })
             time.sleep(0.5)  # Rate limiting
         except Exception as e:
-            print(f"[✗] Failed to cancel {order['symbol']}: {e}")
+            print(f"[X] Failed to cancel {order['symbol']}: {e}")
             failed.append({
                 'phase': 'Cancel',
                 'symbol': order['symbol'],
@@ -100,7 +103,7 @@ if len(close_reduce_orders) > 0:
                 time_in_force=TimeInForce.DAY
             ))
             
-            print(f"[✓] {action} {symbol} - {side_str.upper()} {qty} shares (Order ID: {submitted_order.id})")
+            print(f"[OK] {action} {symbol} - {side_str.upper()} {qty} shares (Order ID: {submitted_order.id})")
             
             executed.append({
                 'phase': 'Close/Reduce',
@@ -116,7 +119,7 @@ if len(close_reduce_orders) > 0:
             time.sleep(0.5)  # Rate limiting
             
         except Exception as e:
-            print(f"[✗] Failed to {action} {symbol}: {e}")
+            print(f"[X] Failed to {action} {symbol}: {e}")
             failed.append({
                 'phase': 'Close/Reduce',
                 'symbol': symbol,
@@ -186,7 +189,7 @@ if len(open_add_orders) > 0:
                         time_in_force=TimeInForce.DAY
                     ))
                     
-                    print(f"[✓] {action} {symbol} - {side_str.upper()} {qty} shares (Order ID: {submitted_order.id})")
+                    print(f"[OK] {action} {symbol} - {side_str.upper()} {qty} shares (Order ID: {submitted_order.id})")
                     
                     executed.append({
                         'phase': 'Open/Add',
@@ -205,7 +208,7 @@ if len(open_add_orders) > 0:
                     time.sleep(0.5)
                     
                 except Exception as e:
-                    print(f"[✗] Failed to {action} {symbol}: {e}")
+                    print(f"[X] Failed to {action} {symbol}: {e}")
                     failed.append({
                         'phase': 'Open/Add',
                         'symbol': symbol,
@@ -251,7 +254,7 @@ if len(open_add_orders) > 0:
                         time_in_force=TimeInForce.DAY
                     ))
                     
-                    print(f"  [✓] {symbol} - {side_str.upper()} {qty} shares @ ~${order.get('target_price', 0):.2f}")
+                    print(f"  [OK] {symbol} - {side_str.upper()} {qty} shares @ ~${order.get('target_price', 0):.2f}")
                     
                     pair_orders_submitted.append({
                         'phase': 'Open/Add',
@@ -268,7 +271,7 @@ if len(open_add_orders) > 0:
                     time.sleep(0.5)
                     
                 except Exception as e:
-                    print(f"  [✗] Failed {symbol}: {e}")
+                    print(f"  [X] Failed {symbol}: {e}")
                     pair_success = False
                     failed.append({
                         'phase': 'Open/Add',
@@ -282,9 +285,9 @@ if len(open_add_orders) > 0:
             if pair_success:
                 executed.extend(pair_orders_submitted)
                 cash -= total_cost
-                print(f"  [✓] Pair {pair_name} executed successfully (Edge: {pair_orders[0].get('edge', 0):.4f})")
+                print(f"  [OK] Pair {pair_name} executed successfully (Edge: {pair_orders[0].get('edge', 0):.4f})")
             else:
-                print(f"  [✗] Pair {pair_name} execution failed - may need manual cleanup")
+                print(f"  [X] Pair {pair_name} execution failed - may need manual cleanup")
 else:
     print("No positions to open or add")
 
@@ -297,7 +300,7 @@ if executed:
     executed_df = pd.DataFrame(executed)
     executed_df.to_csv("data/execution_log.csv", index=False)
     
-    print(f"\n[✓] Successfully Executed: {len(executed)} actions")
+    print(f"\n[OK] Successfully Executed: {len(executed)} actions")
     print(f"    Phase 1 (Cancel): {len(executed_df[executed_df['phase'] == 'Cancel'])}")
     print(f"    Phase 2 (Close/Reduce): {len(executed_df[executed_df['phase'] == 'Close/Reduce'])}")
     print(f"    Phase 3 (Open/Add): {len(executed_df[executed_df['phase'] == 'Open/Add'])}")
@@ -308,7 +311,6 @@ if executed:
         print(f"\n    Pairs executed: {len(pairs_executed)}")
         for pair in pairs_executed:
             pair_data = executed_df[executed_df['pair'] == pair]
-            # FIX: Check if pair_data is empty before accessing
             if len(pair_data) > 0 and 'edge' in pair_data.columns:
                 edge = pair_data['edge'].iloc[0]
                 print(f"      - {pair} (Edge: {edge:.4f})")
@@ -319,7 +321,7 @@ if failed:
     failed_df = pd.DataFrame(failed)
     failed_df.to_csv("data/execution_failures.csv", index=False)
     
-    print(f"\n[✗] Failed: {len(failed)} actions")
+    print(f"\n[X] Failed: {len(failed)} actions")
     for _, fail in failed_df.iterrows():
         print(f"    - {fail['symbol']} ({fail['action']}): {fail.get('error', 'Unknown error')}")
 

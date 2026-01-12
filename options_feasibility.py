@@ -13,7 +13,11 @@ except ImportError:
     print("WARNING: Alpaca options data client not available")
     print("Install with: pip install alpaca-py[options]")
 
-from auth import KEY, SECRET
+try:
+    from auth_local import KEY, SECRET  # For local testing
+except ImportError:
+    print("Import error")
+    from auth import KEY, SECRET  # For GitHub Actions
 
 # ============================================================================
 # CONFIGURATION

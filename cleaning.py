@@ -2,7 +2,11 @@ import pandas as pd
 from alpaca.trading.client import TradingClient
 from alpaca.trading.requests import GetAssetsRequest
 from alpaca.trading.enums import AssetClass
-from auth import KEY, SECRET
+try:
+    from auth_local import KEY, SECRET  # For local testing
+except ImportError:
+    print("Import error")
+    from auth import KEY, SECRET  # For GitHub Actions
 
 # Connect to Alpaca
 print("Connecting to Alpaca to check short-sale eligibility...")
@@ -39,10 +43,10 @@ try:
                 shortable_stocks.append(stock)
             else:
                 non_shortable_stocks.append(stock)
-                print(f"  ✗ {stock}: shortable={asset.shortable}, easy_to_borrow={asset.easy_to_borrow}")
+                print(f"  [X] {stock}: shortable={asset.shortable}, easy_to_borrow={asset.easy_to_borrow}")
         else:
             not_found_stocks.append(stock)
-            print(f"  ✗ {stock}: not found in Alpaca assets")
+            print(f"  [X] {stock}: not found in Alpaca assets")
     
     print(f"\nShort-sale filtering results:")
     print(f"  Shortable: {len(shortable_stocks)}")
@@ -95,8 +99,8 @@ print(f"{'='*80}")
 print(f"Rows: {len(df_clean)}")
 print(f"Stocks: {len(df_clean.columns) - 1}")  # -1 for date column
 print(f"All stocks are:")
-print(f"  ✓ Shortable on Alpaca")
-print(f"  ✓ Easy to borrow")
-print(f"  ✓ Have >= 240 days of data")
+print(f"  [OK] Shortable on Alpaca")
+print(f"  [OK] Easy to borrow")
+print(f"  [OK] Have >= 240 days of data")
 print(f"\nSaved to data/sp500_prices_clean.csv")
 print(f"{'='*80}")
