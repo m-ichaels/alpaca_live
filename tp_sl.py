@@ -5,7 +5,10 @@ from datetime import datetime
 from alpaca.trading.client import TradingClient
 from alpaca.data.historical import StockHistoricalDataClient
 from alpaca.data.requests import StockLatestQuoteRequest
-from auth import KEY, SECRET
+try:
+    from auth_local import KEY, SECRET  # For local testing
+except ImportError:
+    from auth import KEY, SECRET  # For GitHub Actions
 
 # Configuration
 TAKE_PROFIT_Z = 0.5    # Close when spread reverts near mean
