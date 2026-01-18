@@ -2,20 +2,13 @@ name: NYSE Trading Pipeline
 
 on:
   schedule:
-    # Main pipeline: Run at 12:00 PM ET (17:00 UTC) for early close days
-    - cron: "0 17 * * 1-5"
-    # Main pipeline: Run at 3:00 PM ET (20:00 UTC) for regular close days
-    - cron: "0 20 * * 1-5"
+    # Run every hour from 12:00 PM to 8:00 PM UTC
+    # This covers 12 PM ET and 3 PM ET in both EST and EDT
+    - cron: "0 16-20 * * 1-5"
 
-    # TP/SL monitoring: Run every hour during trading hours (9:35 AM - 3:35 PM ET)
-    # 9:35 AM ET = 14:35 UTC
-    - cron: "35 14 * * 1-5" # 9:35 AM ET
-    - cron: "35 15 * * 1-5" # 10:35 AM ET
-    - cron: "35 16 * * 1-5" # 11:35 AM ET
-    - cron: "35 17 * * 1-5" # 12:35 PM ET
-    - cron: "35 18 * * 1-5" # 1:35 PM ET
-    - cron: "35 19 * * 1-5" # 2:35 PM ET
-    - cron: "35 20 * * 1-5" # 3:35 PM ET
+    # TP/SL monitoring: Run at :35 past each hour from 1:35 PM to 8:35 PM UTC
+    # This covers 9:35 AM - 3:35 PM ET in both EST and EDT
+    - cron: "35 13-20 * * 1-5"
 
   workflow_dispatch:
     inputs:
@@ -31,7 +24,7 @@ on:
 jobs:
   run-pipeline:
     runs-on: ubuntu-latest
-    if: github.event_name == 'schedule' && (github.event.schedule == '0 17 * * 1-5' || github.event.schedule == '0 20 * * 1-5') || (github.event_name == 'workflow_dispatch' && github.event.inputs.job_type == 'pipeline')
+    if: github.event_name == 'workflow_dispatch' && github.event.inputs.job_type == 'pipeline' || github.event_name == 'schedule'
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
@@ -55,7 +48,7 @@ jobs:
 
   run-tp-sl:
     runs-on: ubuntu-latest
-    if: github.event_name == 'schedule' && contains(fromJSON('["35 14 * * 1-5", "35 15 * * 1-5", "35 16 * * 1-5", "35 17 * * 1-5", "35 18 * * 1-5", "35 19 * * 1-5", "35 20 * * 1-5"]'), github.event.schedule) || (github.event_name == 'workflow_dispatch' && github.event.inputs.job_type == 'tp_sl')
+    if: github.event_name == 'workflow_dispatch' && github.event.inputs.job_type == 'tp_sl' || github.event_name == 'schedule'
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4

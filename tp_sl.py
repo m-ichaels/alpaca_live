@@ -27,11 +27,11 @@ def should_run_tp_sl():
     """
     Determine if TP/SL should run based on market schedule.
     Returns True if market is currently open, False otherwise.
+    Now properly handles DST transitions.
     """
     et_tz = pytz.timezone('America/New_York')
     now_et = datetime.now(et_tz)
     today = now_et.date()
-    current_time = now_et.time()
     
     print("\n" + "="*70)
     print("TP/SL MARKET CHECK")
@@ -49,14 +49,15 @@ def should_run_tp_sl():
         print("="*70)
         return False
     
-    # Get market open and close times for today
-    market_open = schedule.iloc[0]['market_open'].tz_convert(et_tz).time()
-    market_close = schedule.iloc[0]['market_close'].tz_convert(et_tz).time()
+    # Get market open and close times for today (in ET timezone)
+    market_open_dt = schedule.iloc[0]['market_open'].tz_convert(et_tz)
+    market_close_dt = schedule.iloc[0]['market_close'].tz_convert(et_tz)
     
-    print(f"Market hours: {market_open.strftime('%I:%M %p')} - {market_close.strftime('%I:%M %p')} ET")
+    print(f"Market hours: {market_open_dt.strftime('%I:%M %p')} - {market_close_dt.strftime('%I:%M %p')} ET")
     
     # Check if current time is within market hours
-    if market_open <= current_time <= market_close:
+    # Compare datetime objects to handle DST properly
+    if market_open_dt <= now_et <= market_close_dt:
         print("✓ Market is OPEN - Running TP/SL monitoring")
         print("="*70)
         return True

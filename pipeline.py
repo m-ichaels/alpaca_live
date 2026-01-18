@@ -1,7 +1,7 @@
 import subprocess
 import sys
 import os
-from datetime import datetime, time
+from datetime import datetime, time, timedelta
 import pytz
 import pandas_market_calendars as mcal
 
@@ -13,6 +13,7 @@ def should_run_pipeline():
     """
     Determine if the pipeline should run based on market schedule.
     Returns True if we should run now (1 hour before close), False otherwise.
+    Now properly handles DST transitions.
     """
     et_tz = pytz.timezone('America/New_York')
     now_et = datetime.now(et_tz)
@@ -34,8 +35,9 @@ def should_run_pipeline():
         print("="*70)
         return False
     
-    # Get market close time for today
-    market_close = schedule.iloc[0]['market_close'].tz_convert(et_tz).time()
+    # Get market close time for today (already in ET timezone)
+    market_close_dt = schedule.iloc[0]['market_close'].tz_convert(et_tz)
+    market_close = market_close_dt.time()
     
     # Determine if early close (before 3 PM) or regular close (4 PM)
     is_early_close = market_close < time(15, 0)
