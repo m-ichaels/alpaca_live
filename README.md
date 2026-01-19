@@ -6,3 +6,4 @@ Okay, currently it runs as follows:
 4. "pair_getting.py", "Step 4: Finding cointegrated pairs"
 5. "acceptable_to_trade.py", "Step 5: seeing if they are below the moving average line (and finding stop loss+half life)"
 6. "take_profit.py", "Step 6: applies monte-carlo simulation to estimate the stop loss"
+7. "edge_calc.py", "based on TP & SL, calculates win probability and edge"
