@@ -24,10 +24,12 @@ on:
 jobs:
   run-pipeline:
     runs-on: ubuntu-latest
-    if: github.event_name == 'workflow_dispatch' && github.event.inputs.job_type == 'pipeline' || github.event_name == 'schedule'
+    if: github.event_name == 'workflow_dispatch' && github.event.inputs.job_type == 'pipeline' || (github.event_name == 'schedule' && github.event.schedule == '0 16-20 * * 1-5')
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Set up Python
         uses: actions/setup-python@v4
@@ -46,12 +48,21 @@ jobs:
           ALPACA_SECRET_KEY: ${{ secrets.ALPACA_SECRET_KEY }}
         run: python pipeline.py
 
+      - name: Commit and Push Tracker Files
+        run: |
+          git config --local user.email "action@github.com"
+          git config --local user.name "GitHub Action"
+          git add data/open_pairs.csv data/trade_history.csv data/execution_log.csv data/kelly_positions.csv data/portfolio_orders.csv || true
+          git diff --quiet && git diff --staged --quiet || (git commit -m "Update trading tracker and execution files [skip ci]" && git push)
+
   run-tp-sl:
     runs-on: ubuntu-latest
-    if: github.event_name == 'workflow_dispatch' && github.event.inputs.job_type == 'tp_sl' || github.event_name == 'schedule'
+    if: github.event_name == 'workflow_dispatch' && github.event.inputs.job_type == 'tp_sl' || (github.event_name == 'schedule' && github.event.schedule == '35 13-20 * * 1-5')
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Set up Python
         uses: actions/setup-python@v4
@@ -69,3 +80,10 @@ jobs:
           ALPACA_API_KEY: ${{ secrets.ALPACA_API_KEY }}
           ALPACA_SECRET_KEY: ${{ secrets.ALPACA_SECRET_KEY }}
         run: python tp_sl.py
+
+      - name: Commit and Push Updated Tracker Files
+        run: |
+          git config --local user.email "action@github.com"
+          git config --local user.name "GitHub Action"
+          git add data/open_pairs.csv data/trade_history.csv || true
+          git diff --quiet && git diff --staged --quiet || (git commit -m "Update tracker after TP/SL check [skip ci]" && git push)
